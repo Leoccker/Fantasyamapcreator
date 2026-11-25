@@ -1,7 +1,10 @@
 // Deterministic world generation: same GenInput -> same World.
 import { createNoise2D } from 'simplex-noise'
+import { NO_BIOME } from './biomes'
 import { deriveFeatures } from './features'
+import { generateKingdoms } from './kingdoms'
 import { rngFor } from './rng'
+import { DEFAULT_SETTINGS } from './settings'
 import { ELEVATION_DECIMALS, POINT_DECIMALS, round, WORLD_VERSION, type World } from './world'
 
 export interface GenInput {
@@ -11,31 +14,41 @@ export interface GenInput {
   continents: number
   waterPct: number
   cellCount: number
+  /** Kingdoms to create; 0 or absent = none. */
+  kingdoms?: number
 }
 
-export const DEFAULTS: GenInput = {
+export const DEFAULTS: Required<GenInput> = {
   seed: 'fantasy',
   width: 1600,
   height: 1000,
   continents: 3,
   waterPct: 60,
   cellCount: 8000,
+  kingdoms: 5,
 }
 
 export function generate(input: GenInput): World {
-  const { seed, width: w, height: h, continents, waterPct, cellCount } = input
+  const { seed, width: w, height: h, continents, waterPct, cellCount, kingdoms = 0 } = input
   const points = jitteredPoints(rngFor(seed, 'points'), w, h, cellCount)
   const elevation = elevationField(points, w, h, seed, continents)
   const terrain = { seed, width: w, height: h, seaLevel: seaLevelFor(elevation, waterPct), points, elevation }
-  return {
+  const n = points.length / 2
+  const base: World = {
     version: WORLD_VERSION,
     ...terrain,
-    params: { continents, waterPct, cellCount },
+    params: { continents, waterPct, cellCount, kingdoms },
     ...deriveFeatures(terrain),
+    biomeOverride: new Uint8Array(n).fill(NO_BIOME),
+    stateId: new Uint16Array(n),
     states: [],
     markers: [],
     labels: [],
+    nextId: 1,
+    icons: [],
+    settings: DEFAULT_SETTINGS,
   }
+  return kingdoms > 0 ? generateKingdoms(base, kingdoms) : base
 }
 
 /** Grid of about `count` points, each jittered inside its grid cell. Actual count is cols*rows. */

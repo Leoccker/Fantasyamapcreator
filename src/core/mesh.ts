@@ -45,21 +45,28 @@ export function getMesh(world: Pick<World, 'points' | 'width' | 'height'>): Mesh
 export const isLand = (world: Pick<World, 'biome'>, i: number) => !isWaterBiome(world.biome[i])
 
 /**
- * Flat x1,y1,x2,y2 per Voronoi edge separating a land cell from a water cell (ocean or lake).
+ * Flat x1,y1,x2,y2 per Voronoi edge between two cells for which `differ(a, b)` holds.
  * Each Delaunay halfedge pair e/o joins cells triangles[e] and triangles[o]; the Voronoi edge between
  * them runs between the circumcenters of their two triangles. Hull halfedges (o === -1) are skipped.
  */
-export function coastEdges(world: Pick<World, 'biome'>, mesh: Mesh): Float32Array {
+function edgesWhere(mesh: Mesh, differ: (a: number, b: number) => boolean): Float32Array {
   const { triangles, halfedges } = mesh.delaunay
   const cc = mesh.voronoi.circumcenters
   const out: number[] = []
   for (let e = 0; e < halfedges.length; e++) {
     const o = halfedges[e]
     if (o < e) continue // hull edge, or pair already visited
-    if (isLand(world, triangles[e]) === isLand(world, triangles[o])) continue
+    if (!differ(triangles[e], triangles[o])) continue
     const t1 = (e / 3) | 0
     const t2 = (o / 3) | 0
     out.push(cc[2 * t1], cc[2 * t1 + 1], cc[2 * t2], cc[2 * t2 + 1])
   }
   return Float32Array.from(out)
 }
+
+/** Edges separating land from water (ocean or lake). */
+export const coastEdges = (world: Pick<World, 'biome'>, mesh: Mesh) => edgesWhere(mesh, (a, b) => isLand(world, a) !== isLand(world, b))
+
+/** Edges between land cells of different kingdoms (coasts are drawn separately). */
+export const borderEdges = (world: Pick<World, 'biome' | 'stateId'>, mesh: Mesh) =>
+  edgesWhere(mesh, (a, b) => world.stateId[a] !== world.stateId[b] && isLand(world, a) && isLand(world, b))
