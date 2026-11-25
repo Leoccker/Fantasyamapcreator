@@ -3,6 +3,7 @@ import { Biome } from '../core/biomes'
 import type { Brush } from '../core/brush'
 import { DEFAULTS, generate, type GenInput } from '../core/generate'
 import { createHistory } from '../core/history'
+import { generateFromMask } from '../core/importMask'
 import { addIcon, addState, findItem, hasHandEdits, itemCenter, itemExists, patchItem, removeIcon, removeItem, type Sel } from '../core/items'
 import { generateKingdoms } from '../core/kingdoms'
 import { patchSettings } from '../core/settings'
@@ -21,6 +22,7 @@ import { StatusMessage, type Status } from './StatusMessage'
 import { ToolPanel } from './ToolPanel'
 import { isTyping } from './dom'
 import { fileToIconSrc, iconName } from './iconUpload'
+import { svgToLandMask } from './svgRaster'
 import { bootFromAutosave, browserStorage, useAutosave } from './useAutosave'
 import type { Tool } from './tools'
 import type { Focus } from './useMapInteraction'
@@ -45,12 +47,15 @@ function fromForm(f: GenForm): Required<GenInput> {
   return input
 }
 
-function timedGenerate(input: GenInput): [World, Status] {
+/** Makes a map and says how long it took ("<what> em N ms · ..."), the same way for generate and import. */
+function timed(what: string, make: () => World): [World, Status] {
   const t = performance.now()
-  const w = generate(input)
+  const w = make()
   const ms = Math.round(performance.now() - t)
-  return [w, { text: `Gerado em ${ms} ms · ${w.points.length / 2} células · ${w.rivers.length} rios`, error: false }]
+  return [w, { text: `${what} em ${ms} ms · ${w.points.length / 2} células · ${w.rivers.length} rios`, error: false }]
 }
+
+const timedGenerate = (input: GenInput) => timed('Gerado', () => generate(input))
 
 function download(blob: Blob, name: string) {
   const url = URL.createObjectURL(blob)
@@ -222,6 +227,26 @@ export function App() {
     setBrush((b) => ({ ...b, icon: undefined }))
   }
 
+  /** "Importar mapa": a saved JSON, or an SVG drawing used as the land outline. */
+  function importMap(file: File) {
+    return /\.svg$/i.test(file.name) || file.type === 'image/svg+xml' ? importSvg(file) : importJson(file)
+  }
+
+  /** A new map on the drawing's outline, with the form's seed, cells and kingdoms; settings and icons stay. */
+  async function importSvg(file: File) {
+    try {
+      const mask = await svgToLandMask(file)
+      const [w, s] = timed(`${file.name} importado`, () => generateFromMask(fromForm(form), mask)) // throws before touching the current map
+      unlessEdited(() => {
+        const { settings, icons } = worldRef.current // the map may have changed while the file was read
+        show({ ...w, settings, icons })
+        setStatus(s)
+      })
+    } catch (err) {
+      say(`Não foi possível importar o SVG: ${(err as Error).message}`, true)
+    }
+  }
+
   async function importJson(file: File) {
     try {
       const w = parseWorld(await file.text()) // throws before touching the current map
@@ -299,7 +324,7 @@ export function App() {
             download(new Blob([serializeWorld(world)], { type: 'application/json' }), `${fileBase(world)}.json`)
             say('JSON exportado.')
           }}
-          onImport={importJson}
+          onImport={importMap}
           autosave={{ available: !!storage, failing: autosave.failing, backup: autosave.backup }}
           onClearSaved={() => {
             autosave.clear()

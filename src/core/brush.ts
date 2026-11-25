@@ -3,6 +3,7 @@
 import { isWaterBiome, type Biome } from './biomes'
 import { deriveFeatures } from './features'
 import { withoutAuto } from './items'
+import { clamp01 } from './math'
 import { settleStates } from './kingdoms'
 import { getMesh, type Mesh } from './mesh'
 import { ELEVATION_DECIMALS, round, type MarkerKind, type World } from './world'
@@ -159,4 +160,3 @@ export function commitSession(s: BrushSession): World | null {
   return { ...base, elevation, ...features, stateId }
 }
 
-const clamp01 = (x: number) => (x < 0 ? 0 : x > 1 ? 1 : x)

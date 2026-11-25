@@ -15,7 +15,10 @@ export interface River {
   flow: number[]
 }
 
-/** Generation inputs, exactly as requested, so generate({ seed, width, height, ...params }) reproduces the map. */
+/**
+ * Generation inputs, exactly as requested, so generate({ seed, width, height, ...params }) reproduces the map.
+ * Except for a map made from an SVG outline ("Importar mapa"): there they only fill the form for the next "Gerar".
+ */
 export interface GenParams {
   continents: number
   waterPct: number

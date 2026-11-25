@@ -3,9 +3,10 @@ import { createNoise2D } from 'simplex-noise'
 import { NO_BIOME } from './biomes'
 import { deriveFeatures } from './features'
 import { generateKingdoms } from './kingdoms'
+import { smoothstep } from './math'
 import { rngFor } from './rng'
 import { DEFAULT_SETTINGS } from './settings'
-import { ELEVATION_DECIMALS, POINT_DECIMALS, round, WORLD_VERSION, type World } from './world'
+import { ELEVATION_DECIMALS, POINT_DECIMALS, round, WORLD_VERSION, type GenParams, type World } from './world'
 
 export interface GenInput {
   seed: string
@@ -33,11 +34,18 @@ export function generate(input: GenInput): World {
   const points = jitteredPoints(rngFor(seed, 'points'), w, h, cellCount)
   const elevation = elevationField(points, w, h, seed, continents)
   const terrain = { seed, width: w, height: h, seaLevel: seaLevelFor(elevation, waterPct), points, elevation }
-  const n = points.length / 2
+  return worldFromTerrain(terrain, { continents, waterPct, cellCount, kingdoms })
+}
+
+export type Terrain = Pick<World, 'seed' | 'width' | 'height' | 'seaLevel' | 'points' | 'elevation'>
+
+/** A fresh World on the given terrain: derived biomes and rivers, no places, and kingdoms if asked for. */
+export function worldFromTerrain(terrain: Terrain, params: GenParams): World {
+  const n = terrain.points.length / 2
   const base: World = {
     version: WORLD_VERSION,
     ...terrain,
-    params: { continents, waterPct, cellCount, kingdoms },
+    params,
     ...deriveFeatures(terrain),
     biomeOverride: new Uint8Array(n).fill(NO_BIOME),
     stateId: new Uint16Array(n),
@@ -48,7 +56,7 @@ export function generate(input: GenInput): World {
     icons: [],
     settings: DEFAULT_SETTINGS,
   }
-  return kingdoms > 0 ? generateKingdoms(base, kingdoms) : base
+  return params.kingdoms > 0 ? generateKingdoms(base, params.kingdoms) : base
 }
 
 /** Grid of about `count` points, each jittered inside its grid cell. Actual count is cols*rows. */
@@ -95,20 +103,9 @@ function placeContinents(rng: () => number, k: number): Continent[] {
   return blobs
 }
 
-const clamp01 = (x: number) => (x < 0 ? 0 : x > 1 ? 1 : x)
-const smoothstep = (e0: number, e1: number, x: number) => {
-  const t = clamp01((x - e0) / (e1 - e0))
-  return t * t * (3 - 2 * t)
-}
-
-export function elevationField(points: Float32Array, w: number, h: number, seed: string, continents: number): Float32Array {
-  const noise = createNoise2D(rngFor(seed, 'noise'))
-  const blobs = placeContinents(rngFor(seed, 'blobs'), continents)
-  const aspect = w / h
-  const n = points.length / 2
-  const out = new Float32Array(n)
-
-  const fbm = (u: number, v: number) => {
+/** Fractal (5-octave) noise over normalized map coordinates, in 0..1. `aspect` keeps features round. */
+export function fractalNoise(noise: (x: number, y: number) => number, aspect: number): (u: number, v: number) => number {
+  return (u, v) => {
     let sum = 0
     let amp = 1
     let norm = 0
@@ -121,6 +118,16 @@ export function elevationField(points: Float32Array, w: number, h: number, seed:
     }
     return (sum / norm + 1) / 2
   }
+}
+
+export function elevationField(points: Float32Array, w: number, h: number, seed: string, continents: number): Float32Array {
+  const noise = createNoise2D(rngFor(seed, 'noise'))
+  const blobs = placeContinents(rngFor(seed, 'blobs'), continents)
+  const aspect = w / h
+  const n = points.length / 2
+  const out = new Float32Array(n)
+
+  const fbm = fractalNoise(noise, aspect)
 
   const mask = (u: number, v: number) => {
     let m = 0

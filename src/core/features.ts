@@ -4,6 +4,7 @@
 import { createNoise2D } from 'simplex-noise'
 import { Biome, classify, NO_BIOME, relAltitude } from './biomes'
 import { MinHeap } from './heap'
+import { clamp01 } from './math'
 import { getMesh } from './mesh'
 import { rngFor } from './rng'
 import type { River, World } from './world'
@@ -177,5 +178,4 @@ function traceRivers(n: number, landCount: number, ocean: Uint8Array, lake: Uint
   return rivers
 }
 
-const clamp01 = (x: number) => (x < 0 ? 0 : x > 1 ? 1 : x)
 const round2 = (x: number) => Math.round(x * 100) / 100

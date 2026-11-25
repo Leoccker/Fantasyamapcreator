@@ -31,13 +31,13 @@ export function FileActions({ onExportPng, onExportSvg, onExportJson, onImport, 
       <button type="button" onClick={onExportJson}>
         Exportar JSON
       </button>
-      <button type="button" onClick={() => fileRef.current?.click()}>
-        Importar JSON
+      <button type="button" onClick={() => fileRef.current?.click()} title="Um JSON salvo, ou um desenho SVG usado como contorno da terra">
+        Importar mapa
       </button>
       <input
         ref={fileRef}
         type="file"
-        accept=".json,application/json"
+        accept=".json,application/json,.svg,image/svg+xml"
         hidden
         onChange={(e) => {
           const file = e.target.files?.[0]
