@@ -94,6 +94,12 @@ export function useMapInteraction(canvasRef: RefObject<HTMLCanvasElement | null>
     let pan: { x: number; y: number } | null = null
     let gesture: Gesture | null = null
     let button = -1 // the mouse button that started the current pan/gesture
+    let shrinking = false // the current stroke takes cells away from the brush's kingdom
+    // The kingdom brush shrinks its kingdom with the right button, or Shift for pens and touchpads.
+    const shrinks = (e: PointerEvent) => {
+      const def = toolDef(live.current.tool)
+      return def.kind === 'stroke' && def.brush === 'kingdom' && (e.button === 2 || e.shiftKey)
+    }
 
     const redraw = () => rendererRef.current?.draw(view.current)
     const local = (e: { clientX: number; clientY: number }) => {
@@ -124,7 +130,7 @@ export function useMapInteraction(canvasRef: RefObject<HTMLCanvasElement | null>
       if (!e || panning || def.kind !== 'stroke') brushOverlay.setCursor(null)
       else {
         const [x, y] = toWorld(e)
-        brushOverlay.setCursor({ x, y, r: live.current.brush.radius })
+        brushOverlay.setCursor({ x, y, r: live.current.brush.radius, dashed: shrinking || (!gesture && e.shiftKey && shrinks(e)) })
       }
       canvas.style.cursor = pan ? 'grabbing' : panning ? 'grab' : def.kind === 'select' ? 'default' : 'crosshair'
       redraw()
@@ -150,9 +156,10 @@ export function useMapInteraction(canvasRef: RefObject<HTMLCanvasElement | null>
       if (e.button === 1 || (e.button === 0 && (space || def.kind === 'view'))) {
         e.preventDefault() // no middle-button autoscroll
         pan = { x: e.clientX, y: e.clientY }
-      } else if (e.button === 0) {
+      } else if (e.button === 0 || (e.button === 2 && !space && shrinks(e))) {
         const [x, y] = toWorld(e)
-        if (def.kind === 'stroke') gesture = startStroke(env, def.brush, x, y)
+        shrinking = shrinks(e)
+        if (def.kind === 'stroke') gesture = startStroke(env, def.brush, x, y, shrinking)
         else if (def.kind === 'select') gesture = startSelect(env, x, y)
         // A click on the frame margin or beside the sheet must not create an item off the map.
         else if (def.kind === 'place' && x >= 0 && y >= 0 && x <= live.current.world.width && y <= live.current.world.height)
@@ -175,6 +182,7 @@ export function useMapInteraction(canvasRef: RefObject<HTMLCanvasElement | null>
     const onUp = (e: PointerEvent) => {
       if (e.type === 'pointerup' && e.button !== button) return // another button released mid-gesture
       button = -1
+      shrinking = false
       pan = null
       endGesture(e.type === 'pointerup')
       refresh(e)
@@ -219,6 +227,7 @@ export function useMapInteraction(canvasRef: RefObject<HTMLCanvasElement | null>
       [canvas, 'pointercancel', onUp as EventListener],
       [canvas, 'pointerleave', () => refresh(null)],
       [canvas, 'keydown', onCanvasKey as EventListener],
+      [canvas, 'contextmenu', (e) => e.preventDefault()], // the right button shrinks kingdoms
       [window, 'keydown', onSpace as EventListener],
       [window, 'keyup', onSpace as EventListener],
       [window, 'blur', onBlur],

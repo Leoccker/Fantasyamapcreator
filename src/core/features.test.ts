@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { Biome, isWaterBiome } from './biomes'
+import { Biome, CLASSIC_BIOMES, FANTASY_BIOMES, FANTASY_HOSTS, isWaterBiome, LAND_BIOMES, resolveBiome, type FantasyBiome } from './biomes'
 import { generate } from './generate'
 import { parseWorld, serializeWorld } from './world'
 
@@ -51,11 +51,13 @@ describe('formato v2', () => {
   })
 
   it('arquivo v1 (sem biomas/rios) é migrado igual ao gerado', () => {
-    const o = JSON.parse(serializeWorld(w))
+    // A v1 file predates fantasy biomes: it was generated with the classic ones only.
+    const old = generate({ ...input, biomes: CLASSIC_BIOMES })
+    const o = JSON.parse(serializeWorld(old))
     delete o.biome
     delete o.rivers
     o.version = 1
-    expect(parseWorld(JSON.stringify(o))).toEqual(w)
+    expect(parseWorld(JSON.stringify(o))).toEqual(old)
   })
 
   it('rejeita bioma desconhecido e rio com célula inexistente', () => {
@@ -68,5 +70,37 @@ describe('formato v2', () => {
     const bad3 = JSON.parse(serializeWorld(w))
     bad3.rivers[0].flow[0] = -5
     expect(() => parseWorld(JSON.stringify(bad3))).toThrow(/negativo/)
+  })
+})
+
+describe('biomas de fantasia e biomas da geração', () => {
+  const classic = generate({ ...input, biomes: CLASSIC_BIOMES })
+  const land = (m: typeof w) => [...m.biome].filter((b) => !isWaterBiome(b))
+  const has = (list: readonly number[], b: number) => list.includes(b)
+
+  it('só com os biomas clássicos não há fantasia; com todos, cada bioma de fantasia aparece só no seu hospedeiro', () => {
+    expect(land(classic).every((b) => has(CLASSIC_BIOMES, b))).toBe(true)
+    const all = generate({ ...input, biomes: LAND_BIOMES })
+    for (let i = 0; i < all.biome.length; i++) {
+      const f = all.biome[i]
+      if (has(FANTASY_BIOMES, f)) expect(FANTASY_HOSTS[f as FantasyBiome]).toContain(classic.biome[i])
+      else expect(f).toBe(classic.biome[i]) // patches never move the classic biomes around them
+    }
+    expect(land(all).some((b) => has(FANTASY_BIOMES, b))).toBe(true)
+  })
+
+  it('um bioma desmarcado não aparece e vira um marcado', () => {
+    const noForest = CLASSIC_BIOMES.filter((b) => b !== Biome.Forest)
+    const m = generate({ ...input, biomes: noForest })
+    expect(m.biome.includes(Biome.Forest)).toBe(false)
+    expect(land(m).every((b) => has(noForest, b))).toBe(true)
+    expect(land(generate({ ...input, biomes: [Biome.MagicForest] })).every((b) => b === Biome.MagicForest)).toBe(true)
+  })
+
+  it('resolveBiome sempre devolve um bioma permitido', () => {
+    for (let mask = 1; mask < 1 << LAND_BIOMES.length; mask++) {
+      const allowed = LAND_BIOMES.filter((_, k) => mask & (1 << k))
+      for (const b of CLASSIC_BIOMES) expect(allowed).toContain(resolveBiome(b, allowed))
+    }
   })
 })

@@ -4,12 +4,14 @@ import type { Overlay } from './renderer'
 
 export interface BrushOverlay {
   overlay: Overlay
-  /** World position and radius of the brush circle, or null to hide it. */
-  setCursor(c: { x: number; y: number; r: number } | null): void
+  /** World position and radius of the brush circle (dashed: it takes away instead of painting), or null to hide it. */
+  setCursor(c: BrushCursor | null): void
 }
 
+type BrushCursor = { x: number; y: number; r: number; dashed?: boolean }
+
 export function createBrushOverlay(): BrushOverlay {
-  let cursor: { x: number; y: number; r: number } | null = null
+  let cursor: BrushCursor | null = null
 
   const overlay: Overlay = (ctx) => {
     if (!cursor) return
@@ -22,7 +24,9 @@ export function createBrushOverlay(): BrushOverlay {
     ctx.stroke()
     ctx.lineWidth = 1.5 * px
     ctx.strokeStyle = INK
+    if (cursor.dashed) ctx.setLineDash([6 * px, 4 * px])
     ctx.stroke()
+    ctx.setLineDash([])
   }
 
   return {

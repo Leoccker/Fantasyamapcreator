@@ -1,6 +1,6 @@
 // Deterministic world generation: same GenInput -> same World.
 import { createNoise2D } from 'simplex-noise'
-import { NO_BIOME } from './biomes'
+import { biomeSet, LAND_BIOMES, NO_BIOME, type LandBiome } from './biomes'
 import { deriveFeatures } from './features'
 import { generateKingdoms } from './kingdoms'
 import { smoothstep } from './math'
@@ -17,6 +17,8 @@ export interface GenInput {
   cellCount: number
   /** Kingdoms to create; 0 or absent = none. */
   kingdoms?: number
+  /** Land biomes generation may use; absent = all of them. */
+  biomes?: LandBiome[]
 }
 
 export const DEFAULTS: Required<GenInput> = {
@@ -27,14 +29,16 @@ export const DEFAULTS: Required<GenInput> = {
   waterPct: 60,
   cellCount: 8000,
   kingdoms: 5,
+  biomes: [...LAND_BIOMES],
 }
 
 export function generate(input: GenInput): World {
   const { seed, width: w, height: h, continents, waterPct, cellCount, kingdoms = 0 } = input
+  const biomes = biomeSet(input.biomes)
   const points = jitteredPoints(rngFor(seed, 'points'), w, h, cellCount)
   const elevation = elevationField(points, w, h, seed, continents)
   const terrain = { seed, width: w, height: h, seaLevel: seaLevelFor(elevation, waterPct), points, elevation }
-  return worldFromTerrain(terrain, { continents, waterPct, cellCount, kingdoms })
+  return worldFromTerrain(terrain, { continents, waterPct, cellCount, kingdoms, biomes })
 }
 
 export type Terrain = Pick<World, 'seed' | 'width' | 'height' | 'seaLevel' | 'points' | 'elevation'>
@@ -46,7 +50,7 @@ export function worldFromTerrain(terrain: Terrain, params: GenParams): World {
     version: WORLD_VERSION,
     ...terrain,
     params,
-    ...deriveFeatures(terrain),
+    ...deriveFeatures({ ...terrain, biomes: params.biomes }),
     biomeOverride: new Uint8Array(n).fill(NO_BIOME),
     stateId: new Uint16Array(n),
     states: [],

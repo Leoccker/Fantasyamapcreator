@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { Biome, NO_BIOME } from './biomes'
+import { Biome, CLASSIC_BIOMES, NO_BIOME } from './biomes'
 import { DEFAULT_SETTINGS, patchSettings } from './settings'
 import { generate } from './generate'
 import { addIcon, addMarker } from './items'
@@ -11,6 +11,12 @@ describe('serialização', () => {
   it('save -> load devolve o mesmo mundo', () => {
     const w = generate(small)
     expect(parseWorld(serializeWorld(w))).toEqual(w)
+  })
+
+  it('biomas escolhidos para a geração sobrevivem a save -> load e regeram o mesmo mapa', () => {
+    const w = parseWorld(serializeWorld(generate({ ...small, biomes: [Biome.Desert, Biome.Forest, Biome.MagicForest] })))
+    expect(w.params.biomes).toEqual([Biome.Forest, Biome.Desert, Biome.MagicForest])
+    expect(generate({ seed: w.seed, width: w.width, height: w.height, ...w.params })).toEqual(w)
   })
 
   it('params importados regeram exatamente o mesmo mapa', () => {
@@ -72,6 +78,16 @@ describe('serialização', () => {
     ['biomeOverride pintando água', () => JSON.stringify({ ...base(), biomeOverride: [0, Biome.Ocean] })],
     ['biomeOverride com célula repetida', () => JSON.stringify({ ...base(), biomeOverride: [0, Biome.Forest, 0, Biome.Desert] })],
     ['markers não é lista', () => JSON.stringify({ ...base(), markers: 'x' })],
+    ...([
+      ['biomas da geração vazios', []],
+      ['água nos biomas da geração', [Biome.Ocean]],
+      ['bioma da geração repetido', [Biome.Forest, Biome.Forest]],
+      ['bioma da geração desconhecido', [99]],
+    ] as const).map(([name, biomes]): [string, () => string] => [name, () => {
+      const o = base()
+      o.params.biomes = biomes
+      return JSON.stringify(o)
+    }]),
   ]
   it.each(bad)('rejeita %s', (_, make) => {
     expect(() => parseWorld(make())).toThrow(WorldParseError)
@@ -87,8 +103,10 @@ describe('formato v4 (reinos, marcadores, rótulos)', () => {
   })
 
   it('arquivo v3 abre sem reinos, e os parâmetros ainda regeram o mesmo mapa', () => {
-    const o = JSON.parse(serializeWorld(generate(small)))
+    // A v3 file predates fantasy biomes: it was generated with the classic ones only.
+    const o = JSON.parse(serializeWorld(generate({ ...small, biomes: CLASSIC_BIOMES })))
     for (const key of ['stateId', 'nextId']) delete o[key]
+    delete o.params.biomes
     delete o.params.kingdoms
     o.version = 3
     const w = parseWorld(JSON.stringify(o))

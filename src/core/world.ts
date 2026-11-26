@@ -1,12 +1,12 @@
 // The persisted map. Only data that can't be recomputed (or that the user edits) lives here;
 // the Delaunay/Voronoi mesh is rebuilt from `points` at runtime (see mesh.ts).
 // biome and rivers are derivable, but are saved so the JSON is usable as game data on its own.
-import { BIOME_COUNT, isPaintable, isWaterBiome, NO_BIOME } from './biomes'
+import { BIOME_COUNT, biomeSet, CLASSIC_BIOMES, isPaintable, isWaterBiome, NO_BIOME, type LandBiome } from './biomes'
 import { deriveFeatures } from './features'
 import { ICON_LIMITS, isIconSrc, MARKER_KINDS, type CustomIcon, type MarkerKind } from './icons'
 import { CORNERS, DEFAULT_SETTINGS, GRID_TYPES, SETTINGS_LIMITS, type MapSettings } from './settings'
 
-export const WORLD_VERSION = 6
+export const WORLD_VERSION = 7
 
 /** Cells from source to mouth. The last cell is where it ends: ocean, lake, or the river it joins. */
 export interface River {
@@ -26,6 +26,8 @@ export interface GenParams {
   cellCount: number
   /** Kingdoms requested when generating (the real ones live in World.states). */
   kingdoms: number
+  /** Land biomes generation may use, ascending ids; also used when an edit re-derives the biomes. */
+  biomes: LandBiome[]
 }
 
 /** Allowed [min, max] for GenParams; shared by the UI and import validation. */
@@ -34,7 +36,7 @@ export const LIMITS = {
   waterPct: [5, 95],
   cellCount: [1000, 20000],
   kingdoms: [0, 12],
-} as const satisfies Record<keyof GenParams, readonly [number, number]>
+} as const satisfies Record<Exclude<keyof GenParams, 'biomes'>, readonly [number, number]>
 
 /** A kingdom. Its cells are the ones whose World.stateId equals its id. */
 export interface State {
@@ -157,6 +159,8 @@ export function parseWorld(json: string): World {
     waterPct: int(p.waterPct, 'params.waterPct', ...LIMITS.waterPct),
     cellCount: int(p.cellCount, 'params.cellCount', ...LIMITS.cellCount),
     kingdoms: version >= 4 ? int(p.kingdoms, 'params.kingdoms', ...LIMITS.kingdoms) : 0,
+    // v1-v6 maps were made before fantasy biomes: the classic ones keep re-derived biomes as they were.
+    biomes: version >= 7 ? parseBiomeSet(p.biomes) : [...CLASSIC_BIOMES],
   }
   const seaLevel = range(o.seaLevel, 'seaLevel', 0, 1)
 
@@ -306,6 +310,13 @@ function parseBiome(v: unknown, n: number): Uint8Array {
   const b = numArray(v, 'biome', n)
   if (!b.every((x) => Number.isInteger(x) && x >= 0 && x < BIOME_COUNT)) throw new WorldParseError('biome contém ids desconhecidos.')
   return Uint8Array.from(b)
+}
+
+function parseBiomeSet(v: unknown): LandBiome[] {
+  const b = numArray(v, 'params.biomes')
+  if (!b.length || new Set(b).size !== b.length || !b.every(isPaintable))
+    throw new WorldParseError('params.biomes deve listar biomas de terra distintos (ao menos um).')
+  return biomeSet(b)
 }
 
 function parseOverride(v: unknown, n: number): Uint8Array {

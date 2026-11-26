@@ -145,14 +145,7 @@ export function settleStates(stateId: Uint16Array, biome: Uint8Array, prev?: { b
     const assigned: [number, number][] = []
     const rest: number[] = []
     for (const i of pending) {
-      const votes = new Map<number, number>()
-      for (let e = mesh.nOff[i]; e < mesh.nOff[i + 1]; e++) {
-        const s = stateId[mesh.nIdx[e]]
-        if (s) votes.set(s, (votes.get(s) ?? 0) + 1)
-      }
-      let best = 0
-      let bestVotes = 0
-      for (const [s, v] of votes) if (v > bestVotes || (v === bestVotes && s < best)) [best, bestVotes] = [s, v]
+      const best = neighborMajority(stateId, mesh, i)
       if (best) assigned.push([i, best])
       else rest.push(i)
     }
@@ -160,6 +153,50 @@ export function settleStates(stateId: Uint16Array, biome: Uint8Array, prev?: { b
     for (const [i, s] of assigned) stateId[i] = s // write after the round, so the result doesn't depend on order
     pending = rest
   }
+}
+
+type Neighbors = Pick<Mesh, 'nOff' | 'nIdx'>
+
+/** The kingdom most of cell i's neighbors belong to (ties: lowest id), not counting unclaimed cells or `skip`; 0 if none. */
+export function neighborMajority(stateId: Uint16Array, mesh: Neighbors, i: number, skip = 0): number {
+  const votes = new Map<number, number>()
+  for (let e = mesh.nOff[i]; e < mesh.nOff[i + 1]; e++) {
+    const s = stateId[mesh.nIdx[e]]
+    if (s && s !== skip) votes.set(s, (votes.get(s) ?? 0) + 1)
+  }
+  let best = 0
+  let bestVotes = 0
+  for (const [s, v] of votes) if (v > bestVotes || (v === bestVotes && s < best)) [best, bestVotes] = [s, v]
+  return best
+}
+
+/**
+ * Takes `cells` away from kingdom `state`, mutating the caller's stateId. A cell goes to the kingdom most of its
+ * neighbors belong to, else becomes unclaimed if it touches unclaimed land or water (both have stateId 0), else
+ * stays. In rounds, so the neighbor advances inward across `cells`. Returns the cells that changed.
+ */
+export function shrinkState(stateId: Uint16Array, mesh: Neighbors, cells: number[], state: number): number[] {
+  if (!state) return []
+  const changed: number[] = []
+  let pending = cells.filter((i) => stateId[i] === state)
+  while (pending.length) {
+    const next: [number, number][] = []
+    const rest: number[] = []
+    for (const i of pending) {
+      const to = neighborMajority(stateId, mesh, i, state) // another kingdom wins over unclaimed land
+      let open = to !== 0
+      for (let e = mesh.nOff[i]; !open && e < mesh.nOff[i + 1]; e++) open = stateId[mesh.nIdx[e]] === 0
+      if (open) next.push([i, to])
+      else rest.push(i)
+    }
+    if (!next.length) break // the rest is inland, with no border in reach
+    for (const [i, to] of next) {
+      stateId[i] = to
+      changed.push(i)
+    }
+    pending = rest
+  }
+  return changed
 }
 
 /** Where to look for a kingdom: its capital marker, or the middle of its cells. */
