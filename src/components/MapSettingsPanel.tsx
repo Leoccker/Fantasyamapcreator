@@ -28,8 +28,7 @@ export function MapSettingsPanel({ world, onPatch }: Props) {
   )
 
   return (
-    <fieldset className="map-settings">
-      <legend>Mapa</legend>
+    <div className="map-settings">
       <DraftInput label="Título da moldura (vazio = seed)" value={s.title} maxLength={SETTINGS_LIMITS.title} onCommit={(title) => onPatch({ title })} />
       <div className="row">
         <DraftInput label="Escala (km por unidade)" type="number" value={String(s.kmPerUnit)} describedBy={HINT_ID} onCommit={(v) => onPatch({ kmPerUnit: Number(v) })} />
@@ -54,6 +53,6 @@ export function MapSettingsPanel({ world, onPatch }: Props) {
         {cornerSelect('Barra de escala', s.scaleCorner, 'scaleCorner')}
         {cornerSelect('Rosa dos ventos', s.compassCorner, 'compassCorner')}
       </div>
-    </fieldset>
+    </div>
   )
 }

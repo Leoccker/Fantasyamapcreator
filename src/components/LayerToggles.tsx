@@ -7,14 +7,13 @@ interface Props {
 
 export function LayerToggles({ layers, onChange }: Props) {
   return (
-    <fieldset className="layers">
-      <legend>Camadas</legend>
+    <div className="layers">
       {(Object.keys(LAYERS) as LayerId[]).map((id) => (
         <label key={id} className="check">
           <input type="checkbox" checked={layers[id]} onChange={(e) => onChange({ ...layers, [id]: e.target.checked })} />
           {LAYERS[id]}
         </label>
       ))}
-    </fieldset>
+    </div>
   )
 }

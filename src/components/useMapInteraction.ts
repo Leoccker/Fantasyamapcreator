@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type RefObject } from 'react'
+import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
 import type { Brush } from '../core/brush'
 import { removeItem, type Sel } from '../core/items'
 import type { World } from '../core/world'
@@ -10,6 +10,9 @@ import { startSelect } from './gestures/select'
 import { startStroke } from './gestures/stroke'
 import type { Gesture, GestureEnv } from './gestures/types'
 import { toolDef, type Tool } from './tools'
+
+/** The zoom steps shared by the +, −, 0 keys and the zoom buttons. */
+export type ViewCommand = 'in' | 'out' | 'home'
 
 /** A request to center the view on a map point; a new `n` triggers it even for the same point. */
 export type Focus = { x: number; y: number; n: number }
@@ -46,6 +49,28 @@ export function useMapInteraction(canvasRef: RefObject<HTMLCanvasElement | null>
   live.current = opts
   const view = useRef<View>(HOME)
 
+  // Both read only refs, so they are stable and the listener effect below can use them.
+  const zoomBy = useCallback(
+    (factor: number, px: number, py: number) => {
+      const { world, pad } = live.current
+      const r = canvasRef.current!.getBoundingClientRect()
+      view.current = zoomAt(view.current, world.width, world.height, pad, r.width, r.height, px, py, factor)
+    },
+    [canvasRef],
+  )
+  /** Zooms about the canvas centre, or back to the whole map; the caller repaints. */
+  const step = useCallback(
+    (c: ViewCommand) => {
+      if (c === 'home') {
+        view.current = HOME
+        return
+      }
+      const r = canvasRef.current!.getBoundingClientRect()
+      zoomBy(c === 'in' ? KEY_ZOOM : 1 / KEY_ZOOM, r.width / 2, r.height / 2)
+    },
+    [canvasRef, zoomBy],
+  )
+
   // A new map (generate/import) has a new points array; edits and undo keep it, so they keep the view.
   useEffect(() => {
     view.current = HOME
@@ -79,11 +104,6 @@ export function useMapInteraction(canvasRef: RefObject<HTMLCanvasElement | null>
       const { world, pad } = live.current
       const { px, py, w, h } = local(e)
       return screenToWorld(view.current, world.width, world.height, pad, w, h, px, py)
-    }
-    const zoomBy = (factor: number, px: number, py: number) => {
-      const { world, pad } = live.current
-      const r = canvas.getBoundingClientRect()
-      view.current = zoomAt(view.current, world.width, world.height, pad, r.width, r.height, px, py, factor)
     }
     const env: GestureEnv = {
       world: () => live.current.world,
@@ -175,14 +195,13 @@ export function useMapInteraction(canvasRef: RefObject<HTMLCanvasElement | null>
 
     // Keys on the focused canvas: the keyboard path for navigating the map.
     const onCanvasKey = (e: KeyboardEvent) => {
-      const r = canvas.getBoundingClientRect()
       const { selection, world } = live.current
       if (KEY_PANS[e.key]) {
         const [dx, dy] = KEY_PANS[e.key]
         view.current = { ...view.current, x: view.current.x + dx * KEY_PAN, y: view.current.y + dy * KEY_PAN }
-      } else if (e.key === '+' || e.key === '=') zoomBy(KEY_ZOOM, r.width / 2, r.height / 2)
-      else if (e.key === '-') zoomBy(1 / KEY_ZOOM, r.width / 2, r.height / 2)
-      else if (e.key === '0') view.current = HOME
+      } else if (e.key === '+' || e.key === '=') step('in')
+      else if (e.key === '-') step('out')
+      else if (e.key === '0') step('home')
       else if (e.key === 'Escape') endGesture(false)
       else if ((e.key === 'Delete' || e.key === 'Backspace') && selection && selection.type !== 'state') {
         live.current.onCommit(removeItem(world, selection), 'Removido.')
@@ -209,5 +228,13 @@ export function useMapInteraction(canvasRef: RefObject<HTMLCanvasElement | null>
       for (const [t, type, fn] of listeners) t.removeEventListener(type, fn)
       endGesture(false)
     }
-  }, [canvasRef, rendererRef, brushOverlay])
+  }, [canvasRef, rendererRef, brushOverlay, zoomBy, step])
+
+  /** For the on-map zoom buttons: the same steps as the keys, then a repaint. */
+  return {
+    zoom: (c: ViewCommand) => {
+      step(c)
+      rendererRef.current?.draw(view.current)
+    },
+  }
 }

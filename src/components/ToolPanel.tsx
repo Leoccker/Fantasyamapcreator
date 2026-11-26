@@ -15,21 +15,16 @@ interface Props {
   icons: CustomIcon[]
   onUploadIcon(file: File): void
   onDeleteIcon(id: number): void
-  canUndo: boolean
-  canRedo: boolean
-  onUndo(): void
-  onRedo(): void
 }
 
-export function ToolPanel({ tool, onTool, brush, onBrush, states, icons, onUploadIcon, onDeleteIcon, canUndo, canRedo, onUndo, onRedo }: Props) {
+export function ToolPanel({ tool, onTool, brush, onBrush, states, icons, onUploadIcon, onDeleteIcon }: Props) {
   const controls = toolDef(tool).controls
   const fileRef = useRef<HTMLInputElement>(null)
   const uploadRef = useRef<HTMLButtonElement>(null)
   const full = icons.length >= ICON_LIMITS.count
   const uploaded = icons.find((i) => i.id === brush.icon)
   return (
-    <fieldset className="tools">
-      <legend>Ferramentas</legend>
+    <div className="tools">
       <div className="tool-buttons" role="group" aria-label="Ferramenta ativa">
         {TOOLS.map(({ id, label }) => (
           <button key={id} type="button" aria-pressed={tool === id} onClick={() => onTool(id)}>
@@ -116,20 +111,6 @@ export function ToolPanel({ tool, onTool, brush, onBrush, states, icons, onUploa
           </p>
         </>
       )}
-      <div className="row">
-        <button type="button" disabled={!canUndo} onClick={onUndo} title="Ctrl+Z">
-          Desfazer
-        </button>
-        <button type="button" disabled={!canRedo} onClick={onRedo} title="Ctrl+Shift+Z ou Ctrl+Y">
-          Refazer
-        </button>
-      </div>
-      <p className="hint">
-        Roda do mouse: zoom · Espaço + arrastar ou botão do meio: mover · Selecionar: clique escolhe, arrastar move
-        marcadores e rótulos · Com o mapa focado: setas movem, + e − dão zoom, 0 volta ao mapa inteiro, Esc cancela,
-        Delete apaga o selecionado · Ctrl+Z desfaz, Ctrl+Shift+Z ou Ctrl+Y refaz · Pincéis e marcadores precisam de
-        mouse, caneta ou toque.
-      </p>
-    </fieldset>
+    </div>
   )
 }
