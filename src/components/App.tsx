@@ -12,14 +12,15 @@ import { DEFAULT_LAYERS, type Layers } from '../render/draw'
 import { renderPng } from '../render/renderer'
 import { BiomeLegend } from './BiomeLegend'
 import { ConfirmDiscard } from './ConfirmDiscard'
-import { FileActions } from './FileActions'
 import { GeneratorPanel, type GenForm } from './GeneratorPanel'
 import { LayerToggles } from './LayerToggles'
 import { MapSettingsPanel } from './MapSettingsPanel'
 import { MapCanvas } from './MapCanvas'
 import { PlacesPanel } from './PlacesPanel'
-import { StatusMessage, type Status } from './StatusMessage'
+import { Section } from './Section'
+import type { Status } from './StatusMessage'
 import { ToolPanel } from './ToolPanel'
+import { TopBar } from './TopBar'
 import { isTyping } from './dom'
 import { fileToIconSrc, iconName } from './iconUpload'
 import { svgToLandMask } from './svgRaster'
@@ -107,7 +108,7 @@ export function App() {
   }
 
   /**
-   * Runs `action` now, or first asks (in the panel) when it would throw away hand edits, including imported ones.
+   * Runs `action` now, or first asks (in a strip under the top bar) when it would throw away hand edits, including imported ones.
    * Display settings don't count: a new map keeps them.
    */
   function unlessEdited(action: () => void) {
@@ -140,7 +141,7 @@ export function App() {
     if (t === 'kingdom' && !world.states.some((s) => s.id === brush.state)) setBrush({ ...brush, state: world.states[0]?.id ?? 0 })
   }
 
-  /** Selects a place (announced for screen readers, since the editor appears further down the panel). */
+  /** Selects a place: announced for screen readers, and the Lugares section opens to show its editor. */
   function select(s: Sel | null, center = false) {
     setSelection(s)
     if (!s) return
@@ -261,63 +262,8 @@ export function App() {
 
   return (
     <>
-      <aside className="panel">
-        <h1>Criador de Mapas</h1>
-        <GeneratorPanel
-          form={form}
-          onChange={setForm}
-          onGenerate={() => regenerate(form)}
-          // only Math.random in the app; it stays outside generate()
-          onRandomSeed={() => regenerate({ ...form, seed: Math.random().toString(36).slice(2, 8) })}
-          onGenerateKingdoms={regenerateKingdoms}
-        />
-        {pendingDiscard && (
-          <ConfirmDiscard
-            onConfirm={() => {
-              setPendingDiscard(null)
-              pendingDiscard()
-            }}
-            onCancel={() => setPendingDiscard(null)}
-          />
-        )}
-        <hr />
-        <ToolPanel
-          tool={tool}
-          onTool={chooseTool}
-          brush={liveBrush}
-          onBrush={setBrush}
-          states={world.states}
-          icons={world.icons}
-          onUploadIcon={uploadIcon}
-          onDeleteIcon={deleteIcon}
-          canUndo={history.canUndo()}
-          canRedo={history.canRedo()}
-          onUndo={undo}
-          onRedo={redo}
-        />
-        <hr />
-        <PlacesPanel
-          world={world}
-          selection={selection}
-          onSelect={select}
-          onPatch={(s, p) => commit(patchItem(world, s, p))}
-          onDelete={(s) => {
-            commit(removeItem(world, s), 'Removido.')
-            setSelection(null)
-          }}
-          onAddState={() => {
-            const [w, s] = addState(world)
-            commit(w, 'Reino criado.')
-            setSelection(s)
-            setBrush({ ...brush, state: s.id })
-          }}
-        />
-        <hr />
-        <LayerToggles layers={layers} onChange={setLayers} />
-        <MapSettingsPanel world={world} onPatch={(p) => commit(patchSettings(world, p), 'Configurações do mapa alteradas.', false)} />
-        <BiomeLegend />
-        <hr />
-        <FileActions
+      <div className="top">
+        <TopBar
           onExportPng={exportPng}
           onExportSvg={exportSvg}
           onExportJson={() => {
@@ -330,8 +276,72 @@ export function App() {
             autosave.clear()
             say(storage ? 'Dados salvos neste navegador apagados. O mapa volta a ser salvo na próxima edição.' : 'Este navegador não permite salvar dados locais.')
           }}
+          canUndo={history.canUndo()}
+          canRedo={history.canRedo()}
+          onUndo={undo}
+          onRedo={redo}
+          status={status}
         />
-        <StatusMessage status={status} />
+        {pendingDiscard && (
+          <ConfirmDiscard
+            onConfirm={() => {
+              setPendingDiscard(null)
+              pendingDiscard()
+            }}
+            onCancel={() => setPendingDiscard(null)}
+          />
+        )}
+      </div>
+      <aside className="panel">
+        <Section id="generator" title="Gerador" defaultOpen>
+          <GeneratorPanel
+            form={form}
+            onChange={setForm}
+            onGenerate={() => regenerate(form)}
+            // only Math.random in the app; it stays outside generate()
+            onRandomSeed={() => regenerate({ ...form, seed: Math.random().toString(36).slice(2, 8) })}
+            onGenerateKingdoms={regenerateKingdoms}
+          />
+        </Section>
+        <Section id="tools" title="Ferramentas" defaultOpen>
+          <ToolPanel
+            tool={tool}
+            onTool={chooseTool}
+            brush={liveBrush}
+            onBrush={setBrush}
+            states={world.states}
+            icons={world.icons}
+            onUploadIcon={uploadIcon}
+            onDeleteIcon={deleteIcon}
+          />
+        </Section>
+        <Section id="places" title="Lugares" openWhen={selection}>
+          <PlacesPanel
+            world={world}
+            selection={selection}
+            onSelect={select}
+            onPatch={(s, p) => commit(patchItem(world, s, p))}
+            onDelete={(s) => {
+              commit(removeItem(world, s), 'Removido.')
+              setSelection(null)
+            }}
+            onAddState={() => {
+              const [w, s] = addState(world)
+              commit(w, 'Reino criado.')
+              setSelection(s)
+              setBrush({ ...brush, state: s.id })
+            }}
+          />
+        </Section>
+        <Section id="layers" title="Camadas">
+          <LayerToggles layers={layers} onChange={setLayers} />
+        </Section>
+        <Section id="map" title="Mapa">
+          <MapSettingsPanel world={world} onPatch={(p) => commit(patchSettings(world, p), 'Configurações do mapa alteradas.', false)} />
+        </Section>
+        <Section id="biomes" title="Biomas">
+          <BiomeLegend />
+        </Section>
       </aside>
       <MapCanvas
         world={world}

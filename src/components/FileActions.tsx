@@ -1,27 +1,17 @@
 import { useRef } from 'react'
 import type { SaveResult } from '../core/autosave'
 
-interface Props {
+export interface FileActionsProps {
   onExportPng(): void
   onExportSvg(): void
   onExportJson(): void
   onImport(file: File): void
-  autosave: {
-    /** Browser storage can be used at all. */
-    available: boolean
-    /** The last save failed (stays set until a save works again). */
-    failing: SaveResult | null
-    /** An unreadable older save is being kept aside. */
-    backup: boolean
-  }
-  onClearSaved(): void
 }
 
-export function FileActions({ onExportPng, onExportSvg, onExportJson, onImport, autosave, onClearSaved }: Props) {
+export function FileActions({ onExportPng, onExportSvg, onExportJson, onImport }: FileActionsProps) {
   const fileRef = useRef<HTMLInputElement>(null)
-  const failing = autosave.failing && !autosave.failing.ok ? autosave.failing : null
   return (
-    <div className="actions">
+    <div className="file-actions">
       <button type="button" onClick={onExportPng}>
         Exportar PNG
       </button>
@@ -45,27 +35,53 @@ export function FileActions({ onExportPng, onExportSvg, onExportJson, onImport, 
           if (file) onImport(file)
         }}
       />
-
-      {/* Visible text, not a tooltip: people should know their map and notes stay in this browser. */}
-      {!autosave.available ? (
-        <p className="hint">Este navegador não permite salvar dados locais: o mapa não é salvo sozinho. Exporte o JSON para guardar.</p>
-      ) : (
-        <>
-          <p className="hint">
-            O mapa, com suas notas, é salvo sozinho neste navegador.
-            {autosave.backup && ' Há também uma cópia de um autosave antigo que não pôde ser aberto.'}
-          </p>
-          {failing && (
-            <p className="hint error" role="alert">
-              {failing.reason === 'quota' ? 'O autosave parou: o armazenamento está cheio.' : 'O autosave está falhando.'} Exporte o JSON para
-              não perder o mapa.
-            </p>
-          )}
-          <button type="button" onClick={onClearSaved}>
-            Apagar dados salvos
-          </button>
-        </>
-      )}
     </div>
+  )
+}
+
+export interface AutosaveProps {
+  autosave: {
+    /** Browser storage can be used at all. */
+    available: boolean
+    /** The last save failed (stays set until a save works again). */
+    failing: SaveResult | null
+    /** An unreadable older save is being kept aside. */
+    backup: boolean
+  }
+  onClearSaved(): void
+}
+
+/** The "ⓘ" menu about saving in this browser, plus the autosave error, which is always shown (never inside the menu). */
+export function AutosaveInfo({ autosave, onClearSaved }: AutosaveProps) {
+  const failing = autosave.available && autosave.failing && !autosave.failing.ok ? autosave.failing : null
+  return (
+    <>
+      {failing && (
+        <p className="hint error" role="alert">
+          {failing.reason === 'quota' ? 'O autosave parou: o armazenamento está cheio.' : 'O autosave está falhando.'} Exporte o JSON para não
+          perder o mapa.
+        </p>
+      )}
+      <details className="pop">
+        <summary aria-label="Sobre o salvamento" title="Sobre o salvamento">
+          ⓘ
+        </summary>
+        <div className="pop-body">
+          {!autosave.available ? (
+            <p className="hint">Este navegador não permite salvar dados locais: o mapa não é salvo sozinho. Exporte o JSON para guardar.</p>
+          ) : (
+            <>
+              <p className="hint">
+                O mapa, com suas notas, é salvo sozinho neste navegador.
+                {autosave.backup && ' Há também uma cópia de um autosave antigo que não pôde ser aberto.'}
+              </p>
+              <button type="button" onClick={onClearSaved}>
+                Apagar dados salvos
+              </button>
+            </>
+          )}
+        </div>
+      </details>
+    </>
   )
 }

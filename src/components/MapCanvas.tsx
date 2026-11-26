@@ -23,7 +23,7 @@ export function MapCanvas({ layers, ...interaction }: Props) {
     // Created once; world/layers are pushed by the effects below.
   }, [])
 
-  useMapInteraction(canvasRef, rendererRef, { ...interaction, pad: framePad(world, layers.frame) })
+  const { zoom } = useMapInteraction(canvasRef, rendererRef, { ...interaction, pad: framePad(world, layers.frame) })
 
   useEffect(() => {
     rendererRef.current?.setWorld(world)
@@ -46,6 +46,17 @@ export function MapCanvas({ layers, ...interaction }: Props) {
         role="img"
         aria-label={`Mapa do mundo “${world.seed}”. Setas movem, + e − dão zoom, 0 volta ao mapa inteiro.`}
       />
+      <div className="zoom-controls" role="group" aria-label="Zoom do mapa">
+        <button type="button" onClick={() => zoom('in')} aria-label="Aumentar zoom" title="Aumentar zoom (+)">
+          +
+        </button>
+        <button type="button" onClick={() => zoom('out')} aria-label="Diminuir zoom" title="Diminuir zoom (−)">
+          −
+        </button>
+        <button type="button" onClick={() => zoom('home')} title="Ver mapa inteiro (0)">
+          Ver mapa inteiro
+        </button>
+      </div>
     </main>
   )
 }

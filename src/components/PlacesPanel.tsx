@@ -42,8 +42,7 @@ export function PlacesPanel({ world, selection, onSelect, onPatch, onDelete, onA
   )
 
   return (
-    <fieldset className="places">
-      <legend>Lugares</legend>
+    <div className="places">
       <input ref={searchRef} type="search" placeholder="Buscar…" aria-label="Buscar lugares" value={query} onChange={(e) => setQuery(e.target.value)} />
 
       <div className="row">
@@ -60,7 +59,7 @@ export function PlacesPanel({ world, selection, onSelect, onPatch, onDelete, onA
       {!states.length && !markers.length && !labels.length && <p className="hint">Nada encontrado.</p>}
 
       {selection && <Editor key={selKey(selection)} world={world} sel={selection} onPatch={onPatch} onDelete={deleteAndRefocus} />}
-    </fieldset>
+    </div>
   )
 }
 
