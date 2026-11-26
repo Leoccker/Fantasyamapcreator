@@ -65,5 +65,8 @@ describe('formato v2', () => {
     const bad2 = JSON.parse(serializeWorld(w))
     bad2.rivers[0].cells[0] = 1e9
     expect(() => parseWorld(JSON.stringify(bad2))).toThrow(/rivers/)
+    const bad3 = JSON.parse(serializeWorld(w))
+    bad3.rivers[0].flow[0] = -5
+    expect(() => parseWorld(JSON.stringify(bad3))).toThrow(/negativo/)
   })
 })

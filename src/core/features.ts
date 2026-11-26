@@ -1,12 +1,16 @@
 // Climate, biomes, lakes and rivers, all derived from elevation (+ seed for the moisture noise).
-// Phase 3 brushes re-run deriveFeatures() after an elevation edit.
+// Brushes re-run deriveFeatures() after an elevation edit; hand-painted biomes (biomeOverride) are applied here,
+// so generate, import and edits all agree.
 import { createNoise2D } from 'simplex-noise'
-import { Biome, classify } from './biomes'
+import { Biome, classify, NO_BIOME, relAltitude } from './biomes'
+import { MinHeap } from './heap'
+import { clamp01 } from './math'
 import { getMesh } from './mesh'
 import { rngFor } from './rng'
 import type { River, World } from './world'
 
-export type TerrainInput = Pick<World, 'seed' | 'width' | 'height' | 'seaLevel' | 'points' | 'elevation'>
+export type TerrainInput = Pick<World, 'seed' | 'width' | 'height' | 'seaLevel' | 'points' | 'elevation'> &
+  Partial<Pick<World, 'biomeOverride'>>
 
 export interface Features {
   biome: Uint8Array
@@ -44,10 +48,20 @@ export function deriveFeatures(t: TerrainInput): Features {
   // 2. Distance to the ocean in cells (BFS), used for moisture.
   const dist = new Float32Array(n).fill(Infinity)
   const bfs: number[] = []
-  for (let i = 0; i < n; i++) if (ocean[i]) (dist[i] = 0), bfs.push(i)
+  for (let i = 0; i < n; i++) {
+    if (ocean[i]) {
+      dist[i] = 0
+      bfs.push(i)
+    }
+  }
   for (let q = 0; q < bfs.length; q++) {
     const i = bfs[q]
-    for (const j of neighbors(i)) if (dist[j] === Infinity) (dist[j] = dist[i] + 1), bfs.push(j)
+    for (const j of neighbors(i)) {
+      if (dist[j] === Infinity) {
+        dist[j] = dist[i] + 1
+        bfs.push(j)
+      }
+    }
   }
 
   // 3. Priority-flood from the ocean: fills depressions and gives each land cell a downstream neighbor.
@@ -55,7 +69,12 @@ export function deriveFeatures(t: TerrainInput): Features {
   const down = new Int32Array(n).fill(-1)
   const done = new Uint8Array(n)
   const heap = new MinHeap()
-  for (let i = 0; i < n; i++) if (ocean[i]) (done[i] = 1), heap.push(i, elev[i])
+  for (let i = 0; i < n; i++) {
+    if (ocean[i]) {
+      done[i] = 1
+      heap.push(i, elev[i])
+    }
+  }
   const order: number[] = [] // land cells from lowest to highest filled level
   while (heap.size) {
     const i = heap.pop()
@@ -91,7 +110,6 @@ export function deriveFeatures(t: TerrainInput): Features {
   const noise = createNoise2D(rngFor(t.seed, 'moisture'))
   const biome = new Uint8Array(n)
   const moisture = new Float32Array(n)
-  const span = 1 - seaLevel || 1
   for (let i = 0; i < n; i++) {
     if (ocean[i]) continue // Biome.Ocean is 0
     if (lake[i]) {
@@ -100,12 +118,14 @@ export function deriveFeatures(t: TerrainInput): Features {
     }
     const u = t.points[2 * i] / t.width
     const v = t.points[2 * i + 1] / t.height
-    const relAlt = Math.max(0, (elev[i] - seaLevel) / span)
+    const relAlt = relAltitude(elev[i], seaLevel)
     const wet = (noise(u * 3, v * 3) * 0.6 + noise(u * 7, v * 7) * 0.4 + 1) / 2
     moisture[i] = clamp01(0.55 * wet + 0.45 * Math.exp(-dist[i] / 10))
     // North (top) is cold, south is warm; altitude cools.
     const temp = clamp01(0.1 + 0.85 * v - 0.55 * relAlt + noise(u * 2 + 50, v * 2) * 0.08)
-    biome[i] = classify(temp, moisture[i], relAlt)
+    // A painted biome wins on land; water from the relief (handled above) always wins over paint.
+    const painted = t.biomeOverride?.[i] ?? NO_BIOME
+    biome[i] = painted !== NO_BIOME ? painted : classify(temp, moisture[i], relAlt)
   }
 
   // 6. Flow accumulation, highest cells first; rain is heavier where it's wet.
@@ -138,8 +158,9 @@ function traceRivers(n: number, landCount: number, ocean: Uint8Array, lake: Uint
   starts.sort((a, b) => flow[b[0]] - flow[a[0]] || a[0] - b[0])
 
   const rivers: River[] = []
-  while (starts.length) {
-    const [mouth, end] = starts.shift()!
+  // starts grows as tributaries are found; walk it as a queue.
+  for (let s = 0; s < starts.length; s++) {
+    const [mouth, end] = starts[s]
     const path = [end, mouth]
     for (let cur = mouth; ups[cur].length; ) {
       const [main, ...rest] = [...ups[cur]].sort((a, b) => flow[b] - flow[a] || a - b)
@@ -149,66 +170,12 @@ function traceRivers(n: number, landCount: number, ocean: Uint8Array, lake: Uint
     }
     if (path.length < 3) continue
     path.reverse()
-    const last = path[path.length - 2]
-    rivers.push({
-      cells: path,
-      flow: path.map((c, k) => round2(k === path.length - 1 && (ocean[c] || lake[c]) ? flow[last] : flow[c])),
-    })
+    const flows = path.map((c) => flow[c])
+    // A water cell's flow is the whole basin's; the river's width at its mouth is the last land cell's.
+    if (ocean[end] || lake[end]) flows[flows.length - 1] = flows[flows.length - 2]
+    rivers.push({ cells: path, flow: flows.map(round2) })
   }
   return rivers
 }
 
-const clamp01 = (x: number) => (x < 0 ? 0 : x > 1 ? 1 : x)
 const round2 = (x: number) => Math.round(x * 100) / 100
-
-/** Binary min-heap of cell indices; ties broken by index so the result is deterministic. */
-class MinHeap {
-  private ids: number[] = []
-  private keys: number[] = []
-  get size() {
-    return this.ids.length
-  }
-  push(id: number, key: number) {
-    this.ids.push(id)
-    this.keys.push(key)
-    this.up(this.ids.length - 1)
-  }
-  pop(): number {
-    const top = this.ids[0]
-    const lastId = this.ids.pop()!
-    const lastKey = this.keys.pop()!
-    if (this.ids.length) {
-      this.ids[0] = lastId
-      this.keys[0] = lastKey
-      this.down(0)
-    }
-    return top
-  }
-  private less(a: number, b: number) {
-    return this.keys[a] < this.keys[b] || (this.keys[a] === this.keys[b] && this.ids[a] < this.ids[b])
-  }
-  private swap(a: number, b: number) {
-    ;[this.ids[a], this.ids[b]] = [this.ids[b], this.ids[a]]
-    ;[this.keys[a], this.keys[b]] = [this.keys[b], this.keys[a]]
-  }
-  private up(i: number) {
-    while (i > 0) {
-      const p = (i - 1) >> 1
-      if (!this.less(i, p)) break
-      this.swap(i, p)
-      i = p
-    }
-  }
-  private down(i: number) {
-    for (;;) {
-      const l = 2 * i + 1
-      const r = l + 1
-      let m = i
-      if (l < this.ids.length && this.less(l, m)) m = l
-      if (r < this.ids.length && this.less(r, m)) m = r
-      if (m === i) return
-      this.swap(i, m)
-      i = m
-    }
-  }
-}

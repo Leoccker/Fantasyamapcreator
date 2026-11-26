@@ -4,36 +4,9 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Criador de Mapas de Fantasia</title>
-    <link rel="stylesheet" href="/src/style.css" />
   </head>
   <body>
-    <aside id="panel">
-      <h1>Criador de Mapas</h1>
-      <form id="gen-form">
-        <div class="field">
-          <label for="seed">Seed</label>
-          <span class="row">
-            <input id="seed" type="text" value="fantasy" />
-            <button type="button" id="random-seed" title="Seed aleatória" aria-label="Seed aleatória">🎲</button>
-          </span>
-        </div>
-        <label>Continentes <input id="continents" type="number" step="1" /></label>
-        <label><span>Água: <output id="water-out"></output>%</span>
-          <input id="water" type="range" step="1" />
-        </label>
-        <label>Células <input id="cells" type="number" step="500" /></label>
-        <button type="submit">Gerar</button>
-      </form>
-      <hr />
-      <button type="button" id="export-png">Exportar PNG</button>
-      <button type="button" id="export-json">Exportar JSON</button>
-      <button type="button" id="import-json">Importar JSON</button>
-      <input id="import-file" type="file" accept=".json,application/json" hidden />
-      <p id="msg" role="status" aria-live="polite"></p>
-    </aside>
-    <main>
-      <canvas id="map" aria-label="Mapa"></canvas>
-    </main>
-    <script type="module" src="/src/main.ts"></script>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
