@@ -3,7 +3,7 @@ import { isWaterBiome } from './biomes'
 import { commitSession, startSession, strokeTo, type Brush } from './brush'
 import { generate } from './generate'
 import { addMarker, hasHandEdits } from './items'
-import { generateKingdoms, settleStates } from './kingdoms'
+import { generateKingdoms, settleStates, shrinkState } from './kingdoms'
 import { getMesh } from './mesh'
 
 const input = { seed: 'reinos', width: 800, height: 500, continents: 3, waterPct: 50, cellCount: 4000 }
@@ -142,5 +142,70 @@ describe('reinos depois de editar o relevo', () => {
     strokeTo(same, x, y, { ...brush, state: w.stateId[coastLand], radius: 1 })
     expect(same.touched.size).toBe(0)
     expect(commitSession(same)).toBeNull()
+  })
+
+  it('pincel de reino em modo encolher só tira células do reino escolhido, que vão para o vizinho ou ficam sem dono', () => {
+    // A land cell whose kingdom borders another kingdom.
+    const c = w.stateId.findIndex((a, i) => {
+      if (!a) return false
+      for (let e = mesh.nOff[i]; e < mesh.nOff[i + 1]; e++) if (w.stateId[mesh.nIdx[e]] && w.stateId[mesh.nIdx[e]] !== a) return true
+      return false
+    })
+    const target = w.stateId[c]
+    const s = startSession(w, 'kingdom', true)
+    strokeTo(s, w.points[2 * c], w.points[2 * c + 1], { ...brush, state: target, radius: 30 })
+    const shrunk = commitSession(s)!
+    expect(s.touched.size).toBeGreaterThan(0)
+    for (const i of s.touched) {
+      expect(w.stateId[i]).toBe(target)
+      expect(shrunk.stateId[i]).not.toBe(target)
+    }
+    expect(shrunk.stateId[c]).not.toBe(target)
+    expect(shrunk.states.find((st) => st.id === target)!.auto).toBeUndefined()
+
+    const none = startSession(w, 'kingdom', true)
+    strokeTo(none, w.points[2 * c], w.points[2 * c + 1], { ...brush, state: 0, radius: 30 })
+    expect(commitSession(none)).toBeNull()
+  })
+})
+
+describe('shrinkState (encolher um reino)', () => {
+  /** A row of cells, each touching only the one before and after it. */
+  const chain = (n: number) => {
+    const nOff = new Int32Array(n + 1)
+    const idx: number[] = []
+    for (let i = 0; i < n; i++) {
+      if (i > 0) idx.push(i - 1)
+      if (i < n - 1) idx.push(i + 1)
+      nOff[i + 1] = idx.length
+    }
+    return { nOff, nIdx: Int32Array.from(idx) }
+  }
+  const shrink = (ids: number[], cells: number[], state: number) => {
+    const stateId = Uint16Array.from(ids)
+    const changed = shrinkState(stateId, chain(ids.length), cells, state)
+    return { ids: [...stateId], changed: [...changed].sort((a, b) => a - b) }
+  }
+
+  it('o vizinho avança da borda para dentro, rodada a rodada', () => {
+    expect(shrink([2, 1, 1, 1, 3], [1, 2, 3], 1)).toEqual({ ids: [2, 2, 2, 3, 3], changed: [1, 2, 3] })
+  })
+
+  it('o interior sem borda ao alcance fica como está', () => {
+    expect(shrink([2, 1, 1, 1, 1, 1, 1, 2], [3, 4], 1).changed).toEqual([])
+  })
+
+  it('sem reino vizinho, a costa e a terra sem dono deixam a célula sem dono', () => {
+    expect(shrink([0, 1, 1, 1, 1], [1, 2, 3, 4], 1).ids).toEqual([0, 0, 0, 0, 0])
+  })
+
+  it('outro reino tem prioridade sobre terra sem dono; empate vai para o menor id', () => {
+    expect(shrink([0, 1, 2], [1], 1).ids).toEqual([0, 2, 2])
+    expect(shrink([3, 1, 2], [1], 1).ids).toEqual([3, 2, 2])
+  })
+
+  it('só tira células do reino escolhido; reino 0 não faz nada', () => {
+    expect(shrink([2, 3, 1, 2], [1, 2], 1).ids).toEqual([2, 3, 2, 2])
+    expect(shrink([2, 1, 2], [1], 0)).toEqual({ ids: [2, 1, 2], changed: [] })
   })
 })

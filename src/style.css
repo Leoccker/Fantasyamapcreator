@@ -92,7 +92,8 @@ button {
   color: var(--ink);
   cursor: pointer;
 }
-button:hover:not(:disabled) { background: #fff6dc; }
+/* Pressed buttons keep their own colours: a light hover under paper-coloured text made them unreadable. */
+button:hover:not(:disabled):not([aria-pressed='true']) { background: #fff6dc; }
 button:disabled { opacity: 0.5; cursor: default; }
 button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
 .map-canvas:focus-visible { outline: 3px solid var(--ink); outline-offset: -3px; }
@@ -130,6 +131,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .editor input[type='color'] { height: 2em; padding: 0 2px; }
 .gen-form .row button { flex: 1; }
 .gen-form .field .row button { flex: none; } /* the dice button: only as wide as its icon */
+.biome-set { border: 1px solid var(--ink); margin: 0; padding: 2px 8px 8px; min-width: 0; display: flex; flex-direction: column; gap: 2px; font-size: 0.9rem; }
+.biome-set legend { padding: 0 4px; }
 .gen-form button[type='submit'] { background: var(--ink); color: var(--paper); }
 .gen-form button[type='submit']:hover { background: #5a4430; }
 .map-settings { display: flex; flex-direction: column; gap: 6px; }

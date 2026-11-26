@@ -2,6 +2,7 @@
 // the browser side (components/svgRaster.ts) only turns the file into RGBA pixels laid out by maskLayout().
 // The coast follows the drawing exactly (fixed sea level); relief rises with the distance to the coast.
 import { createNoise2D } from 'simplex-noise'
+import { biomeSet } from './biomes'
 import { fractalNoise, jitteredPoints, worldFromTerrain, type GenInput } from './generate'
 import { clamp, smoothstep } from './math'
 import { rngFor } from './rng'
@@ -171,6 +172,7 @@ function distanceTo(land: Uint8Array, gw: number, gh: number, target: 0 | 1): Fl
  */
 export function generateFromMask(input: Required<GenInput>, mask: LandMask): World {
   const { seed, cellCount, kingdoms, continents } = input
+  const biomes = biomeSet(input.biomes)
   const { width, height, gw, gh } = mask.layout
   const toUnits = 1 / MASK_SCALE
   const toSea = distanceTo(mask.land, gw, gh, 0) // the margin is sea, so there is always some
@@ -207,5 +209,5 @@ export function generateFromMask(input: Required<GenInput>, mask: LandMask): Wor
 
   const waterPct = clamp(Math.round((100 * sea) / n), ...LIMITS.waterPct)
   const terrain = { seed, width, height, seaLevel: IMPORT_SEA_LEVEL, points, elevation }
-  return worldFromTerrain(terrain, { continents, waterPct, cellCount, kingdoms })
+  return worldFromTerrain(terrain, { continents, waterPct, cellCount, kingdoms, biomes })
 }

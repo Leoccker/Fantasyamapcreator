@@ -14,6 +14,7 @@ const SHORTCUTS = [
   'Roda do mouse: zoom',
   'Espaço + arrastar ou botão do meio: mover',
   'Selecionar: clique escolhe, arrastar move marcadores e rótulos',
+  'Pintar reino: botão direito ou Shift + arrastar tira células do reino escolhido (vão para o reino vizinho, ou ficam sem dono)',
   'Com o mapa focado: setas movem, + e − dão zoom, 0 volta ao mapa inteiro, Esc cancela, Delete apaga o selecionado',
   'Ctrl+Z desfaz, Ctrl+Shift+Z ou Ctrl+Y refaz',
   'Pincéis e marcadores precisam de mouse, caneta ou toque.',

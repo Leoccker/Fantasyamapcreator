@@ -4,7 +4,7 @@ import { isWaterBiome, type Biome } from './biomes'
 import { deriveFeatures } from './features'
 import { withoutAuto } from './items'
 import { clamp01 } from './math'
-import { settleStates } from './kingdoms'
+import { settleStates, shrinkState } from './kingdoms'
 import { getMesh, type Mesh } from './mesh'
 import { ELEVATION_DECIMALS, round, type MarkerKind, type World } from './world'
 
@@ -33,13 +33,15 @@ export interface BrushSession {
   override: Uint8Array
   stateId: Uint16Array
   touched: Set<number>
+  /** 'kingdom' tool only: take cells away from the brush's kingdom instead of painting it. */
+  shrink: boolean
   /** Where the last dab landed; the next dabs continue from here at a fixed spacing. */
   last: [number, number] | null
 }
 
 const RAISE_PER_DAB = 0.04
 
-export function startSession(base: World, tool: BrushTool): BrushSession {
+export function startSession(base: World, tool: BrushTool, shrink = false): BrushSession {
   return {
     base,
     tool,
@@ -48,6 +50,7 @@ export function startSession(base: World, tool: BrushTool): BrushSession {
     override: Uint8Array.from(base.biomeOverride),
     stateId: Uint16Array.from(base.stateId),
     touched: new Set(),
+    shrink,
     last: null,
   }
 }
@@ -103,6 +106,11 @@ function dab(s: BrushSession, x: number, y: number, b: Brush): void {
   if (s.tool === 'kingdom') {
     // A kingdom that no longer exists (after "Gerar reinos" or undo) would make the saved file unloadable.
     if (b.state !== 0 && !s.base.states.some((st) => st.id === b.state)) return
+    if (s.shrink) {
+      const land = hits.map(([i]) => i).filter((i) => !isWaterBiome(s.base.biome[i]))
+      for (const i of shrinkState(s.stateId, mesh, land, b.state)) s.touched.add(i)
+      return
+    }
     for (const [i] of hits) {
       // Land-only, and only real changes: repainting a cell with its own kingdom is not an edit.
       if (isWaterBiome(s.base.biome[i]) || s.stateId[i] === b.state) continue
@@ -154,7 +162,7 @@ export function commitSession(s: BrushSession): World | null {
     return { ...base, stateId: s.stateId, states }
   }
   const elevation = s.elevation.map((v) => round(v, ELEVATION_DECIMALS))
-  const features = deriveFeatures({ ...base, elevation })
+  const features = deriveFeatures({ ...base, elevation, biomes: base.params.biomes })
   const stateId = Uint16Array.from(base.stateId)
   settleStates(stateId, features.biome, { biome: base.biome, mesh: getMesh(base) })
   return { ...base, elevation, ...features, stateId }

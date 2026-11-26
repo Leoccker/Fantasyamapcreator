@@ -1,5 +1,5 @@
 // Parchment-style map drawing. drawWorld() is the single drawing path for screen cache and PNG export.
-import { Biome } from '../core/biomes'
+import type { LandBiome } from '../core/biomes'
 import { borderEdges, coastEdges, getMesh, isLand } from '../core/mesh'
 import { rngFor } from '../core/rng'
 import type { World } from '../core/world'
@@ -72,7 +72,7 @@ export function drawWorld(ctx: CanvasRenderingContext2D, world: World, scale: nu
 
   const layer = (draw: (l: CanvasRenderingContext2D) => void) => drawOnLayer(ctx, scale, tx, ty, draw)
   if (layers.hatching) layer((l) => drawHatching(l, coast, land))
-  if (layers.biomes) layer((l) => drawCellTint(l, world, land, scale, (i) => BIOME_COLORS[world.biome[i] as Biome], 0.6))
+  if (layers.biomes) layer((l) => drawCellTint(l, world, land, scale, (i) => BIOME_COLORS[world.biome[i] as LandBiome], 0.6)) // water cells have no colour
   if (layers.tint && world.states.length) {
     const colors = new Map(world.states.map((st) => [st.id, st.color]))
     layer((l) => drawCellTint(l, world, land, scale, (i) => colors.get(world.stateId[i]), 0.25))

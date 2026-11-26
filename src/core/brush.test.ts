@@ -160,3 +160,11 @@ describe('histórico', () => {
     expect(h.canUndo()).toBe(false)
   })
 })
+
+describe('biomas da geração ao esculpir', () => {
+  it('elevar o relevo re-deriva os biomas só com os biomas escolhidos', () => {
+    const only = generate({ seed: 'pincel', width: 800, height: 500, continents: 2, waterPct: 50, cellCount: 3000, biomes: [Biome.Desert] })
+    const raised = commitSession(stroke(only, 'raise', [at(inland)]))!
+    expect([...raised.biome].every((b) => isWaterBiome(b) || b === Biome.Desert)).toBe(true)
+  })
+})

@@ -57,17 +57,20 @@ export function ToolPanel({ tool, onTool, brush, onBrush, states, icons, onUploa
         </label>
       )}
       {controls.includes('state') && (
-        <label>
-          Reino
-          <select value={brush.state} onChange={(e) => onBrush({ ...brush, state: Number(e.target.value) })}>
-            {states.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.name}
-              </option>
-            ))}
-            <option value={0}>Apagar reino (sem dono)</option>
-          </select>
-        </label>
+        <>
+          <label>
+            Reino
+            <select value={brush.state} onChange={(e) => onBrush({ ...brush, state: Number(e.target.value) })}>
+              {states.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name}
+                </option>
+              ))}
+              <option value={0}>Apagar reino (sem dono)</option>
+            </select>
+          </label>
+          <p className="hint">Botão direito ou Shift: tira células do reino (vão para o vizinho).</p>
+        </>
       )}
       {controls.includes('marker') && (
         <>

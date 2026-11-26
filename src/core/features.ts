@@ -2,7 +2,7 @@
 // Brushes re-run deriveFeatures() after an elevation edit; hand-painted biomes (biomeOverride) are applied here,
 // so generate, import and edits all agree.
 import { createNoise2D } from 'simplex-noise'
-import { Biome, classify, NO_BIOME, relAltitude } from './biomes'
+import { Biome, classify, CLASSIC_BIOMES, FANTASY_BIOMES, FANTASY_HOSTS, NO_BIOME, relAltitude, resolveBiome } from './biomes'
 import { MinHeap } from './heap'
 import { clamp01 } from './math'
 import { getMesh } from './mesh'
@@ -10,7 +10,10 @@ import { rngFor } from './rng'
 import type { River, World } from './world'
 
 export type TerrainInput = Pick<World, 'seed' | 'width' | 'height' | 'seaLevel' | 'points' | 'elevation'> &
-  Partial<Pick<World, 'biomeOverride'>>
+  Partial<Pick<World, 'biomeOverride'>> & {
+    /** Land biomes generation may use (GenParams.biomes); absent = the classic ones, as maps before fantasy biomes. */
+    biomes?: readonly Biome[]
+  }
 
 export interface Features {
   biome: Uint8Array
@@ -20,6 +23,8 @@ export interface Features {
 const EPS = 1e-5 // minimum drop per cell in filled depressions, so every land cell drains somewhere
 const LAKE_MIN_DEPTH = 0.008
 const LAKE_MIN_CELLS = 3
+/** Patch noise (0..1) above this turns a host cell into its fantasy biome: a few blobs per map. */
+const PATCH_MIN = 0.72
 
 export function deriveFeatures(t: TerrainInput): Features {
   const { nOff, nIdx, n, delaunay } = getMesh(t)
@@ -108,6 +113,14 @@ export function deriveFeatures(t: TerrainInput): Features {
 
   // 5. Climate and biomes.
   const noise = createNoise2D(rngFor(t.seed, 'moisture'))
+  const allowed = t.biomes ?? CLASSIC_BIOMES
+  const fantasy = FANTASY_BIOMES.filter((f) => allowed.includes(f))
+  // Its own stream, so the moisture/temperature noise (and so every classic biome) is unchanged.
+  const patchNoise = createNoise2D(rngFor(t.seed, 'fantasy'))
+  const aspect = t.width / t.height
+  // Each fantasy biome samples its own region of the noise (offset by its index), so patches don't coincide.
+  const inPatch = (k: number, u: number, v: number) =>
+    (patchNoise(u * aspect * 6 + 100 * k, v * 6) * 0.7 + patchNoise(u * aspect * 14 + 100 * k, v * 14 + 37) * 0.3 + 1) / 2 > PATCH_MIN
   const biome = new Uint8Array(n)
   const moisture = new Float32Array(n)
   for (let i = 0; i < n; i++) {
@@ -125,7 +138,13 @@ export function deriveFeatures(t: TerrainInput): Features {
     const temp = clamp01(0.1 + 0.85 * v - 0.55 * relAlt + noise(u * 2 + 50, v * 2) * 0.08)
     // A painted biome wins on land; water from the relief (handled above) always wins over paint.
     const painted = t.biomeOverride?.[i] ?? NO_BIOME
-    biome[i] = painted !== NO_BIOME ? painted : classify(temp, moisture[i], relAlt)
+    if (painted !== NO_BIOME) {
+      biome[i] = painted
+      continue
+    }
+    const raw = classify(temp, moisture[i], relAlt)
+    const patch = fantasy.find((f) => FANTASY_HOSTS[f].includes(raw) && inPatch(FANTASY_BIOMES.indexOf(f), u, v))
+    biome[i] = patch ?? resolveBiome(raw, allowed)
   }
 
   // 6. Flow accumulation, highest cells first; rain is heavier where it's wet.

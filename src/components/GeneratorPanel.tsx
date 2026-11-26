@@ -1,8 +1,10 @@
 import type { FormEvent } from 'react'
-import { LIMITS, type GenParams } from '../core/world'
+import { BIOME_NAMES, LAND_BIOMES, type LandBiome } from '../core/biomes'
+import { LIMITS } from '../core/world'
+import { BIOME_COLORS } from '../render/palette'
 
-/** Raw input strings; App clamps them to LIMITS when generating. */
-export type GenForm = { seed: string } & Record<keyof GenParams, string>
+/** Raw input strings (App clamps them to LIMITS when generating), plus the land biomes generation may use. */
+export type GenForm = { seed: string; biomes: LandBiome[] } & Record<keyof typeof LIMITS, string>
 
 interface Props {
   form: GenForm
@@ -14,7 +16,7 @@ interface Props {
 }
 
 export function GeneratorPanel({ form, onChange, onGenerate, onRandomSeed, onGenerateKingdoms }: Props) {
-  const set = (k: keyof GenForm) => (e: { target: { value: string } }) => onChange({ ...form, [k]: e.target.value })
+  const set = (k: Exclude<keyof GenForm, 'biomes'>) => (e: { target: { value: string } }) => onChange({ ...form, [k]: e.target.value })
   const submit = (e: FormEvent) => {
     e.preventDefault()
     onGenerate()
@@ -48,6 +50,25 @@ export function GeneratorPanel({ form, onChange, onGenerate, onRandomSeed, onGen
         Reinos
         <input type="number" step={1} min={LIMITS.kingdoms[0]} max={LIMITS.kingdoms[1]} value={form.kingdoms} onChange={set('kingdoms')} />
       </label>
+      <fieldset className="biome-set">
+        <legend>Biomas que podem aparecer</legend>
+        {LAND_BIOMES.map((b) => {
+          const on = form.biomes.includes(b)
+          return (
+            <label key={b} className="check">
+              <input
+                type="checkbox"
+                checked={on}
+                disabled={on && form.biomes.length === 1} // at least one land biome stays
+                onChange={() => onChange({ ...form, biomes: LAND_BIOMES.filter((x) => (x === b ? !on : form.biomes.includes(x))) })}
+              />
+              <span className="swatch" style={{ background: BIOME_COLORS[b] }} aria-hidden="true" />
+              {BIOME_NAMES[b]}
+            </label>
+          )
+        })}
+        <p className="hint">Um bioma desmarcado vira o mais parecido que estiver marcado.</p>
+      </fieldset>
       <div className="row">
         <button type="submit">Gerar</button>
         <button type="button" onClick={onGenerateKingdoms} title="Refaz só os reinos, sem mexer no relevo nem no que você colocou à mão">

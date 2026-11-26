@@ -28,7 +28,7 @@ import { bootFromAutosave, browserStorage, useAutosave } from './useAutosave'
 import type { Tool } from './tools'
 import type { Focus } from './useMapInteraction'
 
-const PARAM_KEYS = Object.keys(LIMITS) as (keyof GenParams)[]
+const PARAM_KEYS = Object.keys(LIMITS) as (keyof typeof LIMITS)[]
 
 const toForm = (seed: string, p: GenParams): GenForm => ({
   seed,
@@ -36,10 +36,11 @@ const toForm = (seed: string, p: GenParams): GenForm => ({
   waterPct: String(p.waterPct),
   cellCount: String(p.cellCount),
   kingdoms: String(p.kingdoms),
+  biomes: p.biomes,
 })
 
 function fromForm(f: GenForm): Required<GenInput> {
-  const input = { ...DEFAULTS, seed: f.seed.trim() || DEFAULTS.seed }
+  const input = { ...DEFAULTS, seed: f.seed.trim() || DEFAULTS.seed, biomes: f.biomes }
   for (const k of PARAM_KEYS) {
     const n = f[k].trim() === '' ? NaN : Math.round(Number(f[k]))
     const [min, max] = LIMITS[k]

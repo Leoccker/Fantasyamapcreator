@@ -2,11 +2,11 @@ import { commitSession, startSession, strokeTo, type BrushTool } from '../../cor
 import type { Gesture, GestureEnv } from './types'
 
 /**
- * A brush stroke. The stroke so far is shown as a real map (coast, biomes, rivers, kingdoms) at most once per
+ * A brush stroke (`shrink`: the kingdom tool takes cells away instead of painting). The stroke so far is shown as a real map (coast, biomes, rivers, kingdoms) at most once per
  * frame, and becomes one undo step on release.
  */
-export function startStroke(env: GestureEnv, tool: BrushTool, x: number, y: number): Gesture {
-  const session = startSession(env.world(), tool)
+export function startStroke(env: GestureEnv, tool: BrushTool, x: number, y: number, shrink = false): Gesture {
+  const session = startSession(env.world(), tool, shrink)
   let frame = 0
   let previewed = false // the renderer shows a preview instead of the committed world
 
