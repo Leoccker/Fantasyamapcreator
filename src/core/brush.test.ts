@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { Biome, isWaterBiome, NO_BIOME } from './biomes'
-import { cellsInRadius, commitSession, startSession, strokeTo, type Brush } from './brush'
+import { cellsInRadius, commitSession, drainFresh, previewSession, startSession, strokeTo, type Brush } from './brush'
 import { generate } from './generate'
 import { createHistory } from './history'
 import { getMesh } from './mesh'
@@ -166,5 +166,57 @@ describe('biomas da geração ao esculpir', () => {
     const only = generate({ seed: 'pincel', width: 800, height: 500, continents: 2, waterPct: 50, cellCount: 3000, biomes: [Biome.Desert] })
     const raised = commitSession(stroke(only, 'raise', [at(inland)]))!
     expect([...raised.biome].every((b) => isWaterBiome(b) || b === Biome.Desert)).toBe(true)
+  })
+})
+
+describe('prévia do traço', () => {
+  const k = generate({ seed: 'pincel', width: 800, height: 500, continents: 2, waterPct: 50, cellCount: 3000, kingdoms: 3 })
+  const km = getMesh(k)
+  const touches = (i: number, water: boolean) => {
+    for (let e = km.nOff[i]; e < km.nOff[i + 1]; e++) if (isWaterBiome(k.biome[km.nIdx[e]]) === water) return true
+    return false
+  }
+  const coastLand = k.biome.findIndex((b, i) => !isWaterBiome(b) && touches(i, true) && k.stateId[i] > 0)
+  const coastSea = k.biome.findIndex((b, i) => b === Biome.Ocean && touches(i, false))
+  const xy = (i: number): [number, number] => [k.points[2 * i], k.points[2 * i + 1]]
+  const strong: Brush = { ...brush, strength: 1, radius: 25 }
+  /** Rubs the brush back and forth over cell i: dabs only land every radius/4 of movement. */
+  const scrub = (s: ReturnType<typeof startSession>, i: number, times: number) => {
+    const [x, y] = xy(i)
+    for (let n = 0; n < times; n++) strokeTo(s, x + (n % 2 ? 8 : -8), y, strong)
+  }
+
+  it('drainFresh devolve as células mudadas desde a última vez, inclusive as repintadas', () => {
+    const s = startSession(k, 'raise')
+    strokeTo(s, ...xy(coastLand), strong)
+    const first = drainFresh(s)
+    expect(new Set(first)).toEqual(s.touched)
+    expect(drainFresh(s)).toEqual([])
+    scrub(s, coastLand, 2) // back over the same cells: they changed again
+    expect(drainFresh(s)).toContain(coastLand)
+  })
+
+  it('baixar a costa vira mar na prévia, sem reino; o resto fica como no mapa, que não é alterado', () => {
+    const before = Uint8Array.from(k.biome)
+    const s = startSession(k, 'lower')
+    scrub(s, coastLand, 40)
+    const p = previewSession(s)!
+    expect(s.elevation[coastLand]).toBeLessThan(k.seaLevel)
+    expect(p.biome[coastLand]).toBe(Biome.Ocean)
+    expect(p.stateId[coastLand]).toBe(0)
+    for (let i = 0; i < km.n; i++) {
+      const crossed = (s.elevation[i] < k.seaLevel) !== (k.elevation[i] < k.seaLevel)
+      if (!crossed) expect(p.biome[i]).toBe(k.biome[i]) // includes lakes above sea level
+    }
+    expect(k.biome).toEqual(before)
+    expect(p.rivers).toBe(k.rivers) // rivers wait for the release
+  })
+
+  it('subir o mar perto da costa vira terra com o bioma de um vizinho', () => {
+    const s = startSession(k, 'raise')
+    scrub(s, coastSea, 40)
+    const p = previewSession(s)!
+    expect(s.elevation[coastSea]).toBeGreaterThanOrEqual(k.seaLevel)
+    expect(isWaterBiome(p.biome[coastSea])).toBe(false)
   })
 })
