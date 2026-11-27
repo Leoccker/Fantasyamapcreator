@@ -4,6 +4,7 @@
 import { createNoise2D } from 'simplex-noise'
 import { biomeSet } from './biomes'
 import { fractalNoise, jitteredPoints, worldFromTerrain, type GenInput } from './generate'
+import { DEFAULT_SIZE } from './mapSize'
 import { clamp, smoothstep } from './math'
 import { rngFor } from './rng'
 import { ELEVATION_DECIMALS, LIMITS, round, type World } from './world'
@@ -12,14 +13,13 @@ export class ImportMapError extends Error {
   name = 'ImportMapError'
 }
 
-/** Long side of the new map, in map units, and the sea band around the drawing (share of the long side). */
-const LONG_SIDE = 1600
+/** The sea band around the drawing (share of the long side). */
 const MARGIN = 0.06
 /** Mask pixels per map unit: half resolution is still finer than the cells (about 14 units apart at 8000). */
 const MASK_SCALE = 0.5
 /** Fixed sea level: land is always above it and sea below, whatever the drawing's share of land. */
 export const IMPORT_SEA_LEVEL = 0.3
-/** Distance to the coast (map units) at which land reaches full height, and sea its full depth. */
+/** Distance to the coast (map units, on a Médio map) at which land reaches full height, and sea its full depth. */
 const RIDGE = 192
 const SHELF = 120
 
@@ -38,11 +38,11 @@ export interface LandMask {
   land: Uint8Array
 }
 
-/** Fits a drawing of svgW x svgH into a map with its proportions, long side LONG_SIDE, plus the sea margin. */
-export function maskLayout(svgW: number, svgH: number): MaskLayout {
+/** Fits a drawing of svgW x svgH into a map with its proportions, long side `longSide`, plus the sea margin. */
+export function maskLayout(svgW: number, svgH: number, longSide = DEFAULT_SIZE.width): MaskLayout {
   if (!(svgW > 0 && svgH > 0 && Number.isFinite(svgW) && Number.isFinite(svgH))) throw new ImportMapError('O SVG tem um tamanho inválido.')
-  const margin = Math.round(MARGIN * LONG_SIDE)
-  const s = (LONG_SIDE - 2 * margin) / Math.max(svgW, svgH)
+  const margin = Math.round(MARGIN * longSide)
+  const s = (longSide - 2 * margin) / Math.max(svgW, svgH)
   const [iw, ih] = [Math.max(1, Math.round(svgW * s)), Math.max(1, Math.round(svgH * s))]
   const [width, height] = [iw + 2 * margin, ih + 2 * margin]
   const px = (v: number) => Math.max(1, Math.round(v * MASK_SCALE))
@@ -174,13 +174,14 @@ export function generateFromMask(input: Required<GenInput>, mask: LandMask): Wor
   const { seed, cellCount, kingdoms, continents } = input
   const biomes = biomeSet(input.biomes)
   const { width, height, gw, gh } = mask.layout
+  const k = Math.max(width, height) / DEFAULT_SIZE.width // a bigger map keeps the same shape of hills and shelves
   const toUnits = 1 / MASK_SCALE
   const toSea = distanceTo(mask.land, gw, gh, 0) // the margin is sea, so there is always some
   const toLand = distanceTo(mask.land, gw, gh, 1) // landFromRgba guarantees some land
   let deepest = 0
   for (let i = 0; i < toSea.length; i++) if (mask.land[i] && toSea[i] > deepest) deepest = toSea[i]
   // Full height at RIDGE inland, or sooner on a drawing whose land is all narrow, so small islands get hills too.
-  const ridge = Math.min(RIDGE, Math.max(1, deepest * toUnits))
+  const ridge = Math.min(RIDGE * k, Math.max(1, deepest * toUnits))
 
   const points = jitteredPoints(rngFor(seed, 'points'), width, height, cellCount)
   const fbm = fractalNoise(createNoise2D(rngFor(seed, 'noise')), width / height)
@@ -199,7 +200,7 @@ export function generateFromMask(input: Required<GenInput>, mask: LandMask): Wor
     } else {
       sea++
       // Just below sea level at the coast, down to about 0.01 offshore (a shelf), with a little noise.
-      e = IMPORT_SEA_LEVEL - 0.01 - (IMPORT_SEA_LEVEL - 0.02) * smoothstep(0, SHELF, toLand[i] * toUnits) * (0.85 + 0.15 * f)
+      e = IMPORT_SEA_LEVEL - 0.01 - (IMPORT_SEA_LEVEL - 0.02) * smoothstep(0, SHELF * k, toLand[i] * toUnits) * (0.85 + 0.15 * f)
     }
     elevation[c] = round(e, ELEVATION_DECIMALS)
   }

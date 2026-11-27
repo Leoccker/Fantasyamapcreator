@@ -3,10 +3,10 @@ import { ImportMapError, landFromRgba, maskLayout, type LandMask } from '../core
 const MAX_FILE = 5_000_000
 
 /**
- * Reads an SVG file as a land mask. The SVG is only drawn through an <img> (which runs no scripts and loads
+ * Reads an SVG file as a land mask for a map whose long side is `longSide`. The SVG is only drawn through an <img> (which runs no scripts and loads
  * nothing from outside) onto a canvas, and only its pixels are kept; it is never put into the page.
  */
-export async function svgToLandMask(file: File): Promise<LandMask> {
+export async function svgToLandMask(file: File, longSide: number): Promise<LandMask> {
   if (file.size > MAX_FILE) throw new ImportMapError('SVG grande demais (máx. 5 MB).')
   // Parsed only to read and fix its size; a DOMParser document is inert (no scripts, no loads).
   const doc = new DOMParser().parseFromString(await file.text(), 'image/svg+xml')
@@ -15,7 +15,7 @@ export async function svgToLandMask(file: File): Promise<LandMask> {
   const size = svgSize(root)
   if (!size) throw new ImportMapError('O SVG não informa seu tamanho (faltam viewBox, width e height).')
 
-  const layout = maskLayout(size.w, size.h)
+  const layout = maskLayout(size.w, size.h, longSide)
   const { draw } = layout
   // Explicit size so every browser draws it the same (some give an SVG without width/height no size at all);
   // a viewBox makes the drawing scale to that size instead of being cropped.

@@ -4,6 +4,7 @@
 import { createNoise2D } from 'simplex-noise'
 import { Biome, classify, CLASSIC_BIOMES, FANTASY_BIOMES, FANTASY_HOSTS, NO_BIOME, relAltitude, resolveBiome } from './biomes'
 import { MinHeap } from './heap'
+import { DEFAULT_SIZE } from './mapSize'
 import { clamp01 } from './math'
 import { getMesh } from './mesh'
 import { rngFor } from './rng'
@@ -155,7 +156,9 @@ export function deriveFeatures(t: TerrainInput): Features {
     if (down[i] >= 0) flow[down[i]] += flow[i]
   }
 
-  return { biome, rivers: traceRivers(n, order.length, ocean, lake, down, flow) }
+  // Rivers drain a share of the land as it would be on a Médio map, so a bigger map gets more of them, not bigger ones.
+  const landAtMedio = (order.length * DEFAULT_SIZE.width * DEFAULT_SIZE.height) / (t.width * t.height)
+  return { biome, rivers: traceRivers(n, landAtMedio, ocean, lake, down, flow) }
 }
 
 /**

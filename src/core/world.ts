@@ -34,7 +34,7 @@ export interface GenParams {
 export const LIMITS = {
   continents: [1, 6],
   waterPct: [5, 95],
-  cellCount: [1000, 20000],
+  cellCount: [1000, 40000],
   kingdoms: [0, 12],
 } as const satisfies Record<Exclude<keyof GenParams, 'biomes'>, readonly [number, number]>
 

@@ -3,6 +3,7 @@ import { createNoise2D } from 'simplex-noise'
 import { biomeSet, LAND_BIOMES, NO_BIOME, type LandBiome } from './biomes'
 import { deriveFeatures } from './features'
 import { generateKingdoms } from './kingdoms'
+import { DEFAULT_SIZE } from './mapSize'
 import { smoothstep } from './math'
 import { rngFor } from './rng'
 import { DEFAULT_SETTINGS } from './settings'
@@ -23,11 +24,11 @@ export interface GenInput {
 
 export const DEFAULTS: Required<GenInput> = {
   seed: 'fantasy',
-  width: 1600,
-  height: 1000,
+  width: DEFAULT_SIZE.width,
+  height: DEFAULT_SIZE.height,
   continents: 3,
   waterPct: 60,
-  cellCount: 8000,
+  cellCount: DEFAULT_SIZE.cells,
   kingdoms: 5,
   biomes: [...LAND_BIOMES],
 }

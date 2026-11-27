@@ -2,6 +2,7 @@ import { BIOME_NAMES, LAND_BIOMES, type Biome } from '../core/biomes'
 import type { Brush } from '../core/brush'
 import { useRef } from 'react'
 import { ICON_LIMITS, type CustomIcon } from '../core/icons'
+import { RADIUS_MIN } from '../core/mapSize'
 import type { State } from '../core/world'
 import { IconPicker } from './IconPicker'
 import { toolDef, TOOLS, type Tool } from './tools'
@@ -11,13 +12,15 @@ interface Props {
   onTool(t: Tool): void
   brush: Brush
   onBrush(b: Brush): void
+  /** Largest brush radius for this map's size. */
+  maxRadius: number
   states: State[]
   icons: CustomIcon[]
   onUploadIcon(file: File): void
   onDeleteIcon(id: number): void
 }
 
-export function ToolPanel({ tool, onTool, brush, onBrush, states, icons, onUploadIcon, onDeleteIcon }: Props) {
+export function ToolPanel({ tool, onTool, brush, onBrush, maxRadius, states, icons, onUploadIcon, onDeleteIcon }: Props) {
   const controls = toolDef(tool).controls
   const fileRef = useRef<HTMLInputElement>(null)
   const uploadRef = useRef<HTMLButtonElement>(null)
@@ -35,7 +38,7 @@ export function ToolPanel({ tool, onTool, brush, onBrush, states, icons, onUploa
       {controls.includes('radius') && (
         <label>
           <span>Raio: {brush.radius}</span>
-          <input type="range" min={5} max={200} step={1} value={brush.radius} onChange={(e) => onBrush({ ...brush, radius: Number(e.target.value) })} />
+          <input type="range" min={RADIUS_MIN} max={maxRadius} step={1} value={brush.radius} onChange={(e) => onBrush({ ...brush, radius: Number(e.target.value) })} />
         </label>
       )}
       {controls.includes('strength') && (

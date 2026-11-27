@@ -24,7 +24,7 @@ describe('geração de reinos', () => {
     for (let i = 0; i < mesh.n; i++) if (isWaterBiome(w.biome[i])) expect(w.stateId[i]).toBe(0)
     for (const s of w.states) {
       const cap = w.markers.find((m) => m.id === s.capital)!
-      expect(cap.kind).toBe('city')
+      expect(cap.kind).toBe('capital')
       expect(w.stateId[mesh.delaunay.find(cap.x, cap.y)]).toBe(s.id)
     }
   })
