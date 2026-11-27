@@ -17,9 +17,9 @@ function load(src: string): HTMLImageElement {
   return img
 }
 
-/** The decoded image, or null while it loads (or if it is broken). */
+/** The decoded image, or null while it loads (or if it is broken / running headless without DOM). */
 export function iconImage(src: string | undefined): HTMLImageElement | null {
-  if (!src) return null
+  if (!src || typeof Image === 'undefined') return null
   const img = load(src)
   return img.complete && img.naturalWidth ? img : null
 }
