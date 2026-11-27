@@ -6,8 +6,9 @@ import { createHistory } from '../core/history'
 import { generateFromMask } from '../core/importMask'
 import { addIcon, addState, findItem, hasHandEdits, itemCenter, itemExists, patchItem, removeIcon, removeItem, type Sel } from '../core/items'
 import { generateKingdoms } from '../core/kingdoms'
+import { radiusDefault, radiusMax, scaleRadius, sizeById, sizeOfWorld } from '../core/mapSize'
 import { patchSettings } from '../core/settings'
-import { LIMITS, parseWorld, serializeWorld, type GenParams, type World } from '../core/world'
+import { LIMITS, parseWorld, serializeWorld, type World } from '../core/world'
 import { DEFAULT_LAYERS, type Layers } from '../render/draw'
 import { renderPng } from '../render/renderer'
 import { BiomeLegend } from './BiomeLegend'
@@ -30,17 +31,19 @@ import type { Focus } from './useMapInteraction'
 
 const PARAM_KEYS = Object.keys(LIMITS) as (keyof typeof LIMITS)[]
 
-const toForm = (seed: string, p: GenParams): GenForm => ({
-  seed,
-  continents: String(p.continents),
-  waterPct: String(p.waterPct),
-  cellCount: String(p.cellCount),
-  kingdoms: String(p.kingdoms),
-  biomes: p.biomes,
+const toForm = (w: World): GenForm => ({
+  seed: w.seed,
+  size: sizeOfWorld(w).id,
+  continents: String(w.params.continents),
+  waterPct: String(w.params.waterPct),
+  cellCount: String(w.params.cellCount),
+  kingdoms: String(w.params.kingdoms),
+  biomes: w.params.biomes,
 })
 
 function fromForm(f: GenForm): Required<GenInput> {
-  const input = { ...DEFAULTS, seed: f.seed.trim() || DEFAULTS.seed, biomes: f.biomes }
+  const { width, height } = sizeById(f.size)
+  const input = { ...DEFAULTS, seed: f.seed.trim() || DEFAULTS.seed, width, height, biomes: f.biomes }
   for (const k of PARAM_KEYS) {
     const n = f[k].trim() === '' ? NaN : Math.round(Number(f[k]))
     const [min, max] = LIMITS[k]
@@ -78,13 +81,13 @@ export function App() {
     setWorldState(w)
   }
   const [status, setStatus] = useState<Status>(initial.status)
-  const [form, setForm] = useState<GenForm>(() => toForm(initial.world.seed, initial.world.params))
+  const [form, setForm] = useState<GenForm>(() => toForm(initial.world))
   // Hand edits since this map was made, including sculpting (which hasHandEdits can't see). Saved with the
   // autosave, so a restored map still asks before being discarded.
   const edited = useRef(initial.edited)
   const [layers, setLayers] = useState<Layers>(DEFAULT_LAYERS)
   const [tool, setTool] = useState<Tool>('navigate')
-  const [brush, setBrush] = useState<Brush>({ radius: 40, strength: 0.5, biome: Biome.Forest, state: 0, marker: 'city' })
+  const [brush, setBrush] = useState<Brush>(() => ({ radius: radiusDefault(initial.world), strength: 0.5, biome: Biome.Forest, state: 0, marker: 'city' }))
   // Undo can remove the selected item, so the selection is checked against the current world on every render.
   const [rawSelection, setSelection] = useState<Sel | null>(null)
   const selection = itemExists(world, rawSelection) ? rawSelection : null
@@ -101,11 +104,13 @@ export function App() {
 
   /** Replaces the map with a new one (generate/import): history belongs to the old map. */
   function show(w: World) {
+    const prev = worldRef.current // read now: the updater runs after setWorld below has moved the ref
+    setBrush((b) => ({ ...b, radius: scaleRadius(b.radius, prev, w) }))
     history.clear()
     edited.current = false
     setSelection(null)
     setWorld(w)
-    setForm(toForm(w.seed, w.params))
+    setForm(toForm(w))
   }
 
   /**
@@ -237,8 +242,9 @@ export function App() {
   /** A new map on the drawing's outline, with the form's seed, cells and kingdoms; settings and icons stay. */
   async function importSvg(file: File) {
     try {
-      const mask = await svgToLandMask(file)
-      const [w, s] = timed(`${file.name} importado`, () => generateFromMask(fromForm(form), mask)) // throws before touching the current map
+      const input = fromForm(form)
+      const mask = await svgToLandMask(file, input.width) // the chosen size's long side
+      const [w, s] = timed(`${file.name} importado`, () => generateFromMask(input, mask)) // throws before touching the current map
       unlessEdited(() => {
         const { settings, icons } = worldRef.current // the map may have changed while the file was read
         show({ ...w, settings, icons })
@@ -310,6 +316,7 @@ export function App() {
             onTool={chooseTool}
             brush={liveBrush}
             onBrush={setBrush}
+            maxRadius={radiusMax(world)}
             states={world.states}
             icons={world.icons}
             onUploadIcon={uploadIcon}

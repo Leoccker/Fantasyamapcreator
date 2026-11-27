@@ -3,6 +3,7 @@
 // When zoomed in and idle, the visible part is re-drawn at screen resolution ("detail") so it stays sharp.
 // Markers and labels are not in the cache: they are drawn every frame (see places.ts).
 import type { Sel } from '../core/items'
+import { sizeById } from '../core/mapSize'
 import { getMesh } from '../core/mesh'
 import type { World } from '../core/world'
 import { drawAnnotations } from './decor'
@@ -35,6 +36,8 @@ export interface Renderer {
 
 // Browsers fail silently on very large canvases, so nothing we draw exceeds this per side.
 export const MAX_CANVAS = 8192
+// Maps longer than Grande have their cached map drawn at 1x whatever the pixel ratio.
+const BIG_MAP = sizeById('large').width
 // How long the view must stay still before the sharp re-draw (it costs a full drawWorld).
 const DETAIL_DELAY_MS = 150
 
@@ -53,7 +56,7 @@ const mapChanged = (a: World | null, b: World) => !a || MAP_KEYS.some((k) => a[k
 /** Renders the full sheet (map, markers, labels, grid, scale, compass, frame) at `scale` into a PNG. */
 export async function renderPng(w: World, scale: number, layers: Layers): Promise<Blob> {
   const pad = framePad(w, layers.frame)
-  if ((Math.max(w.width, w.height) + 2 * pad) * scale > MAX_CANVAS) throw new Error(`Imagem grande demais (máx. ${MAX_CANVAS}px por lado).`)
+  scale = Math.min(scale, MAX_CANVAS / (Math.max(w.width, w.height) + 2 * pad)) // a huge map comes out at a lower scale
   await Promise.all([fontsReady(), iconsReady(w)])
   const c = renderTo(w, scale, layers, undefined, pad)
   const ctx = c.getContext('2d')!
@@ -86,7 +89,11 @@ export function createRenderer(canvas: HTMLCanvasElement, initialLayers: Layers)
   let patch: HTMLCanvasElement | null = null
 
   const dpr = () => Math.min(window.devicePixelRatio || 1, 2)
-  const scaleFor = (w: World) => Math.min(dpr(), MAX_CANVAS / Math.max(w.width, w.height))
+  // Maps bigger than Grande are cached at 1x (an Enorme one at 2x would take ~100 MB); zoomed views get the sharp detail render.
+  const scaleFor = (w: World) => {
+    const long = Math.max(w.width, w.height)
+    return Math.min(long > BIG_MAP ? 1 : dpr(), MAX_CANVAS / long)
+  }
   const screen = (w: World) => {
     const r = dpr()
     const cw = Math.round(canvas.clientWidth * r)

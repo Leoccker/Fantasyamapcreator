@@ -86,7 +86,7 @@ export function generateKingdoms(w: World, count: number, variant = 0): World {
     const capitalId = nextId++
     const name = namer('state')
     states.push({ id, name, color: KINGDOM_COLORS[k % KINGDOM_COLORS.length], capital: capitalId, auto: true })
-    markers.push({ id: capitalId, kind: 'city', ...at(cap), name: namer('city'), notes: '', auto: true })
+    markers.push({ id: capitalId, kind: 'capital', ...at(cap), name: namer('city'), notes: '', auto: true })
 
     // Towns: random owned cells kept apart from each other and from the capital.
     const placed = [cap]

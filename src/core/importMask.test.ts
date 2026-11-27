@@ -53,6 +53,11 @@ describe('maskLayout', () => {
     expect(tall.width).toBeGreaterThanOrEqual(100)
   })
 
+  it('usa o lado maior do tamanho escolhido no Gerador', () => {
+    expect(maskLayout(400, 300, 3200).width).toBe(3200)
+    expect(maskLayout(100, 1000, 1000).height).toBe(1000)
+  })
+
   it.each([
     [0, 100],
     [100, -1],

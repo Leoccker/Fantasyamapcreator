@@ -1,10 +1,11 @@
 import type { FormEvent } from 'react'
 import { BIOME_NAMES, LAND_BIOMES, type LandBiome } from '../core/biomes'
+import { SIZES, sizeById, type SizeId } from '../core/mapSize'
 import { LIMITS } from '../core/world'
 import { BIOME_COLORS } from '../render/palette'
 
-/** Raw input strings (App clamps them to LIMITS when generating), plus the land biomes generation may use. */
-export type GenForm = { seed: string; biomes: LandBiome[] } & Record<keyof typeof LIMITS, string>
+/** Raw input strings (App clamps them to LIMITS when generating), plus the map size and the land biomes generation may use. */
+export type GenForm = { seed: string; size: SizeId; biomes: LandBiome[] } & Record<keyof typeof LIMITS, string>
 
 interface Props {
   form: GenForm
@@ -16,7 +17,7 @@ interface Props {
 }
 
 export function GeneratorPanel({ form, onChange, onGenerate, onRandomSeed, onGenerateKingdoms }: Props) {
-  const set = (k: Exclude<keyof GenForm, 'biomes'>) => (e: { target: { value: string } }) => onChange({ ...form, [k]: e.target.value })
+  const set = (k: Exclude<keyof GenForm, 'biomes' | 'size'>) => (e: { target: { value: string } }) => onChange({ ...form, [k]: e.target.value })
   const submit = (e: FormEvent) => {
     e.preventDefault()
     onGenerate()
@@ -34,6 +35,23 @@ export function GeneratorPanel({ form, onChange, onGenerate, onRandomSeed, onGen
           </button>
         </span>
       </div>
+      <label>
+        Tamanho
+        <select
+          value={form.size}
+          // The cell count follows, so cells keep their size; it can still be changed below.
+          onChange={(e) => {
+            const s = sizeById(e.target.value)
+            onChange({ ...form, size: s.id, cellCount: String(s.cells) })
+          }}
+        >
+          {SIZES.map((s) => (
+            <option key={s.id} value={s.id}>
+              {s.label} ({s.width}×{s.height})
+            </option>
+          ))}
+        </select>
+      </label>
       <label>
         Continentes
         <input type="number" step={1} min={LIMITS.continents[0]} max={LIMITS.continents[1]} value={form.continents} onChange={set('continents')} />
