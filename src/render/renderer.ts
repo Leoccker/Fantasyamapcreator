@@ -3,8 +3,10 @@
 // When zoomed in and idle, the visible part is re-drawn at screen resolution ("detail") so it stays sharp.
 // Markers and labels are not in the cache: they are drawn every frame (see places.ts).
 import type { Sel } from '../core/items'
+import { getMesh } from '../core/mesh'
 import type { World } from '../core/world'
 import { drawAnnotations } from './decor'
+import { patchRects } from './dirtyRect'
 import { drawWorld, MAP_LAYERS, type Layers } from './draw'
 import { fontsReady } from './fonts'
 import { iconsReady, onIconLoad } from './iconImages'
@@ -15,6 +17,11 @@ export type Overlay = (ctx: CanvasRenderingContext2D, view: View) => void
 
 export interface Renderer {
   setWorld(w: World): void
+  /**
+   * A brush-stroke frame: redraws only the cached map around `cells` (the rest may be slightly off) and holds the
+   * sharp zoomed re-draw. The next setWorld, with the real world, renders everything again.
+   */
+  preview(w: World, cells: number[]): void
   setLayers(l: Layers): void
   invalidate(): void
   draw(view?: View): void
@@ -75,6 +82,8 @@ export function createRenderer(canvas: HTMLCanvasElement, initialLayers: Layers)
   let selection: Sel | null = null
   let drag: PlacesState['drag'] = null
   let textReady = false
+  let previewing = false
+  let patch: HTMLCanvasElement | null = null
 
   const dpr = () => Math.min(window.devicePixelRatio || 1, 2)
   const scaleFor = (w: World) => Math.min(dpr(), MAX_CANVAS / Math.max(w.width, w.height))
@@ -116,7 +125,7 @@ export function createRenderer(canvas: HTMLCanvasElement, initialLayers: Layers)
 
   function renderDetail() {
     detailTimer = 0
-    if (destroyed || !world || view.zoom <= 1) return
+    if (destroyed || previewing || !world || view.zoom <= 1) return
     const { cw, ch, s, ox, oy, key } = screen(world)
     detail ??= document.createElement('canvas')
     detail.width = cw
@@ -130,7 +139,7 @@ export function createRenderer(canvas: HTMLCanvasElement, initialLayers: Layers)
   function viewChanged() {
     detailKey = ''
     clearTimeout(detailTimer)
-    if (view.zoom > 1) detailTimer = window.setTimeout(renderDetail, DETAIL_DELAY_MS)
+    if (view.zoom > 1 && !previewing) detailTimer = window.setTimeout(renderDetail, DETAIL_DELAY_MS)
   }
 
   const schedule = () => {
@@ -168,11 +177,31 @@ export function createRenderer(canvas: HTMLCanvasElement, initialLayers: Layers)
 
   return {
     setWorld(w) {
-      const rebuild = mapChanged(world, w)
+      const rebuild = mapChanged(world, w) || previewing // a patched cache is only approximate
+      previewing = false
       world = w
       drag = null // the committed world now holds the dragged item's new position
       if (rebuild) invalidate()
       else schedule()
+    },
+    preview(w, cells) {
+      previewing = true
+      viewChanged() // drops the sharp image, which no longer matches
+      const r =
+        cache && !dirty && world?.points === w.points && scaleFor(w) === cacheScale
+          ? patchRects(getMesh(w).polys, cells, cacheScale, cache.width, cache.height)
+          : null
+      world = w
+      if (r) {
+        // Drawn with an integer device-pixel offset, so it lines up exactly with the full render around it.
+        const { outer: o, inner: i } = r
+        patch ??= document.createElement('canvas')
+        patch.width = o.w
+        patch.height = o.h
+        drawWorld(patch.getContext('2d')!, w, cacheScale, layers, -o.x, -o.y)
+        cache!.getContext('2d')!.drawImage(patch, i.x - o.x, i.y - o.y, i.w, i.h, i.x, i.y, i.w, i.h)
+      } else if (cells.length) dirty = true // no usable cache, or a patch as big as the map: paint() renders it all
+      schedule()
     },
     setLayers(l) {
       const rebuild = MAP_LAYERS.some((k) => l[k] !== layers[k])

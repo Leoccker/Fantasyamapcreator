@@ -1,9 +1,10 @@
 // Parchment-style map drawing. drawWorld() is the single drawing path for screen cache and PNG export.
 import type { LandBiome } from '../core/biomes'
-import { borderEdges, coastEdges, getMesh, isLand } from '../core/mesh'
+import { borderEdges, coastEdges, getMesh, isLand, type Mesh } from '../core/mesh'
 import { rngFor } from '../core/rng'
 import type { World } from '../core/world'
 import { chainEdges, smooth, type Polyline } from './coast'
+import { REACH } from './dirtyRect'
 import { BIOME_COLORS, INK, PAPER, RIVER, WATER_TINT } from './palette'
 import { makePath, type PathSink } from './path'
 import { drawSymbol, placeSymbols } from './symbols'
@@ -55,6 +56,9 @@ export function drawWorld(ctx: CanvasRenderingContext2D, world: World, scale: nu
   const { width: W, height: H } = world
   const geo = geometry(world)
   const { coast, land } = geo
+  // What this canvas shows, in map units: a stroke-preview patch or a zoomed view skips the work outside it.
+  const [x0, y0, x1, y1] = [-tx / scale, -ty / scale, (ctx.canvas.width - tx) / scale, (ctx.canvas.height - ty) / scale]
+  const near: Near = (x, y, m) => x >= x0 - m && y >= y0 - m && x <= x1 + m && y <= y1 + m
 
   ctx.save()
   setup(ctx, scale, tx, ty)
@@ -63,7 +67,7 @@ export function drawWorld(ctx: CanvasRenderingContext2D, world: World, scale: nu
   // Paper, then a tint on all water (ocean + lakes).
   ctx.fillStyle = PAPER
   ctx.fillRect(0, 0, W, H)
-  if (layers.paper) drawPaperTexture(ctx, world)
+  if (layers.paper) drawPaperTexture(ctx, world, near)
   const water = new Path2D()
   water.rect(0, 0, W, H)
   water.addPath(land)
@@ -71,13 +75,13 @@ export function drawWorld(ctx: CanvasRenderingContext2D, world: World, scale: nu
   ctx.fill(water, 'evenodd')
 
   const layer = (draw: (l: CanvasRenderingContext2D) => void) => drawOnLayer(ctx, scale, tx, ty, draw)
-  if (layers.hatching) layer((l) => drawHatching(l, coast, land))
-  if (layers.biomes) layer((l) => drawCellTint(l, world, land, scale, (i) => BIOME_COLORS[world.biome[i] as LandBiome], 0.6)) // water cells have no colour
+  if (layers.hatching) layer((l) => drawHatching(l, linesNear(coast, near), land))
+  if (layers.biomes) layer((l) => drawCellTint(l, world, land, scale, near, (i) => BIOME_COLORS[world.biome[i] as LandBiome], 0.6)) // water cells have no colour
   if (layers.tint && world.states.length) {
     const colors = new Map(world.states.map((st) => [st.id, st.color]))
-    layer((l) => drawCellTint(l, world, land, scale, (i) => colors.get(world.stateId[i]), 0.25))
+    layer((l) => drawCellTint(l, world, land, scale, near, (i) => colors.get(world.stateId[i]), 0.25))
   }
-  if (!baseOnly) drawLines(ctx, world, layers, geo)
+  if (!baseOnly) drawLines(ctx, world, layers, geo, near)
   ctx.restore()
 }
 
@@ -86,11 +90,53 @@ export function drawLineWork(ctx: CanvasRenderingContext2D, world: World, layers
   ctx.save()
   setup(ctx, 1, 0, 0)
   clipToMap(ctx, world)
-  drawLines(ctx, world, layers, geometry(world))
+  drawLines(ctx, world, layers, geometry(world), everywhere)
   ctx.restore()
 }
 
 type Geometry = { mesh: ReturnType<typeof getMesh>; coast: Polyline[]; land: Path2D }
+
+/** Whether a point is within `m` map units of what the canvas shows. */
+type Near = (x: number, y: number, m: number) => boolean
+const everywhere: Near = () => true
+
+/**
+ * The parts of `lines` near the canvas, with one more point on each side so the strokes there look the same; whole
+ * lines when they are all near. Returned together, so they become one path (overlaps don't darken).
+ */
+function linesNear(lines: Polyline[], near: Near): Polyline[] {
+  const out: Polyline[] = []
+  for (const line of lines) {
+    const { pts, closed } = line
+    const n = pts.length / 2
+    const isNear = (k: number) => near(pts[2 * k], pts[2 * k + 1], REACH)
+    let far = 0
+    while (far < n && isNear(far)) far++
+    if (far === n) {
+      out.push(line)
+      continue
+    }
+    // Walk from a far point (around the loop if closed), so no near run is split at the line's start.
+    const first = closed ? far : 0
+    const steps = closed ? n + 1 : n
+    let run: number[] = []
+    let prev = -1
+    for (let s = 0; s < steps; s++) {
+      const k = (first + s) % n
+      if (isNear(k)) {
+        if (!run.length && prev >= 0) run.push(pts[2 * prev], pts[2 * prev + 1])
+        run.push(pts[2 * k], pts[2 * k + 1])
+      } else if (run.length) {
+        run.push(pts[2 * k], pts[2 * k + 1])
+        out.push({ pts: run, closed: false })
+        run = []
+      }
+      prev = k
+    }
+    if (run.length) out.push({ pts: run, closed: false })
+  }
+  return out
+}
 
 function geometry(world: World): Geometry {
   const mesh = getMesh(world)
@@ -105,12 +151,13 @@ function clipToMap(ctx: CanvasRenderingContext2D, world: World) {
   ctx.clip()
 }
 
-function drawLines(ctx: CanvasRenderingContext2D, world: World, layers: Layers, { mesh, land }: Geometry) {
-  if (layers.rivers) drawRivers(ctx, world)
+function drawLines(ctx: CanvasRenderingContext2D, world: World, layers: Layers, { mesh, land }: Geometry, near: Near) {
+  if (layers.rivers) drawRivers(ctx, world, near)
   if (layers.relief) {
     ctx.strokeStyle = INK
     ctx.lineWidth = 0.9
-    for (const s of placeSymbols(world, mesh)) drawSymbol(ctx, s)
+    // All placed (one symbol can push out the next), only the ones that show drawn.
+    for (const s of placeSymbols(world, mesh)) if (near(s.x, s.y, 2 * s.size)) drawSymbol(ctx, s)
   }
   if (layers.borders && world.states.length) {
     ctx.save()
@@ -145,38 +192,58 @@ function pathOf(lines: Polyline[]): Path2D {
   })
 }
 
+// Reused by every layer: a new map-sized canvas per layer per frame made brush strokes stutter (GPU memory churn).
+// It only grows, so the small stroke-preview patches and full renders don't keep resizing it.
+let scratch: HTMLCanvasElement | null = null
+// Bigger than any screen map (a large PNG export): a throwaway canvas, so the shared one doesn't keep that memory.
+const SCRATCH_MAX_PX = 4096 * 4096
+
 /** Draws into a same-size transparent canvas (so composite tricks don't touch the map), then blits it. */
 function drawOnLayer(ctx: CanvasRenderingContext2D, scale: number, tx: number, ty: number, draw: (l: CanvasRenderingContext2D) => void) {
-  const c = document.createElement('canvas')
-  c.width = ctx.canvas.width
-  c.height = ctx.canvas.height
+  const { width: w, height: h } = ctx.canvas
+  const c = w * h > SCRATCH_MAX_PX ? document.createElement('canvas') : (scratch ??= document.createElement('canvas'))
+  if (c.width < w || c.height < h) {
+    c.width = Math.max(c.width, w)
+    c.height = Math.max(c.height, h)
+  }
   const l = c.getContext('2d')!
+  l.clearRect(0, 0, w, h)
+  l.save()
+  l.beginPath()
+  l.rect(0, 0, w, h)
+  l.clip() // the blur filter would otherwise run over the whole grown canvas
   setup(l, scale, tx, ty)
   draw(l)
+  l.restore()
   ctx.save()
   ctx.setTransform(1, 0, 0, 1, 0, 0)
-  ctx.drawImage(c, 0, 0)
+  ctx.drawImage(c, 0, 0, w, h, 0, 0, w, h)
   ctx.restore()
 }
 
 /** Seeded speckles, blotches and a vignette, so the same map always gets the same paper. */
-function drawPaperTexture(ctx: CanvasRenderingContext2D, world: World) {
+function drawPaperTexture(ctx: CanvasRenderingContext2D, world: World, near: Near) {
   const { width: W, height: H } = world
   const rng = rngFor(world.seed, 'paper')
   for (let i = 0; i < 14; i++) {
     const x = rng() * W
     const y = rng() * H
     const r = 60 + rng() * 220
+    const alpha = 0.04 + rng() * 0.05 // drawn even when skipped, so the next blotches stay the same
+    if (!near(x, y, r)) continue
     const g = ctx.createRadialGradient(x, y, 0, x, y, r)
-    g.addColorStop(0, `rgba(150, 110, 60, ${0.04 + rng() * 0.05})`)
+    g.addColorStop(0, `rgba(150, 110, 60, ${alpha})`)
     g.addColorStop(1, 'rgba(150, 110, 60, 0)')
     ctx.fillStyle = g
     ctx.fillRect(x - r, y - r, 2 * r, 2 * r)
   }
   const dots = Math.round((W * H) / 300)
   for (let i = 0; i < dots; i++) {
-    ctx.fillStyle = rng() < 0.5 ? 'rgba(90, 60, 30, 0.07)' : 'rgba(255, 250, 235, 0.10)'
-    ctx.fillRect(rng() * W, rng() * H, 1 + rng(), 1 + rng())
+    const dark = rng() < 0.5
+    const [x, y, w, h] = [rng() * W, rng() * H, 1 + rng(), 1 + rng()]
+    if (!near(x, y, 2)) continue
+    ctx.fillStyle = dark ? 'rgba(90, 60, 30, 0.07)' : 'rgba(255, 250, 235, 0.10)'
+    ctx.fillRect(x, y, w, h)
   }
   const v = ctx.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.35, W / 2, H / 2, Math.hypot(W, H) / 2)
   v.addColorStop(0, 'rgba(110, 70, 30, 0)')
@@ -205,24 +272,43 @@ function drawHatching(l: CanvasRenderingContext2D, coast: Polyline[], land: Path
   l.globalCompositeOperation = 'source-over'
 }
 
+// One Path2D per cell, built once per mesh: a brush stroke redraws the tints every frame, and adding ~50k
+// points one call at a time cost ~25 ms per tint layer, while addPath() of a ready cell is ~1 ms in all.
+const cellPathMemo = new WeakMap<Mesh, (Path2D | null)[]>()
+function cellPaths(mesh: Mesh): (Path2D | null)[] {
+  let paths = cellPathMemo.get(mesh)
+  if (!paths) {
+    paths = mesh.polys.map((p) => {
+      if (!p) return null
+      const path = new Path2D()
+      addPoly(path, p, true)
+      return path
+    })
+    cellPathMemo.set(mesh, paths)
+  }
+  return paths
+}
+
 /** Soft watercolor tints per land cell (biomes, kingdoms), blurred and then clipped to the land. */
 function drawCellTint(
   l: CanvasRenderingContext2D,
   world: World,
   land: Path2D,
   scale: number,
+  near: Near,
   colorOf: (cell: number) => string | undefined,
   alpha: number,
 ) {
   const mesh = getMesh(world)
+  const cells = cellPaths(mesh)
   const byColor = new Map<string, Path2D>()
   for (let i = 0; i < mesh.n; i++) {
     const color = colorOf(i)
-    const p = mesh.polys[i]
-    if (!color || !p || !isLand(world, i)) continue
+    const p = cells[i]
+    if (!color || !p || !isLand(world, i) || !near(world.points[2 * i], world.points[2 * i + 1], REACH)) continue
     let path = byColor.get(color)
     if (!path) byColor.set(color, (path = new Path2D()))
-    addPoly(path, p, true)
+    path.addPath(p)
   }
   l.save()
   l.filter = `blur(${3 * scale}px)` // filter radius is in device pixels, not affected by the transform
@@ -241,7 +327,7 @@ function drawCellTint(
 }
 
 /** Rivers as smooth curves through cell centers, thicker downstream. */
-function drawRivers(ctx: CanvasRenderingContext2D, world: World) {
+function drawRivers(ctx: CanvasRenderingContext2D, world: World, near: Near) {
   const maxFlow = Math.max(1, ...world.rivers.map((r) => r.flow[r.flow.length - 1]))
   ctx.strokeStyle = RIVER
   const pt = (c: number) => [world.points[2 * c], world.points[2 * c + 1]]
@@ -254,6 +340,7 @@ function drawRivers(ctx: CanvasRenderingContext2D, world: World) {
     for (let k = 1; k < n; k++) {
       const [ax, ay] = k === 1 ? pts[0] : mid(pts[k - 1], pts[k - 2])
       const [bx, by] = k === n - 1 ? pts[k] : mid(pts[k], pts[k - 1])
+      if (!near(pts[k - 1][0], pts[k - 1][1], REACH)) continue
       ctx.beginPath()
       ctx.moveTo(ax, ay)
       ctx.quadraticCurveTo(pts[k - 1][0], pts[k - 1][1], bx, by)

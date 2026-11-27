@@ -1,6 +1,6 @@
 // Brush editing, pure. A stroke edits private copies (a BrushSession) and only commitSession() builds a new
 // World, so committed Worlds are never mutated and undo can keep plain references to them.
-import { isWaterBiome, type Biome } from './biomes'
+import { Biome, isWaterBiome } from './biomes'
 import { deriveFeatures } from './features'
 import { withoutAuto } from './items'
 import { clamp01 } from './math'
@@ -33,6 +33,8 @@ export interface BrushSession {
   override: Uint8Array
   stateId: Uint16Array
   touched: Set<number>
+  /** Cells touched since the last drainFresh(): what the stroke preview must redraw. */
+  fresh: Set<number>
   /** 'kingdom' tool only: take cells away from the brush's kingdom instead of painting it. */
   shrink: boolean
   /** Where the last dab landed; the next dabs continue from here at a fixed spacing. */
@@ -50,6 +52,7 @@ export function startSession(base: World, tool: BrushTool, shrink = false): Brus
     override: Uint8Array.from(base.biomeOverride),
     stateId: Uint16Array.from(base.stateId),
     touched: new Set(),
+    fresh: new Set(),
     shrink,
     last: null,
   }
@@ -99,6 +102,11 @@ export function strokeTo(s: BrushSession, x: number, y: number, b: Brush): void 
   if (n > 0) s.last = [lx + ((x - lx) * n * step) / dist, ly + ((y - ly) * n * step) / dist]
 }
 
+function touch(s: BrushSession, i: number) {
+  s.touched.add(i)
+  s.fresh.add(i)
+}
+
 function dab(s: BrushSession, x: number, y: number, b: Brush): void {
   const mesh = getMesh(s.base)
   const hits = cellsInRadius(mesh, s.base.points, x, y, b.radius)
@@ -108,14 +116,14 @@ function dab(s: BrushSession, x: number, y: number, b: Brush): void {
     if (b.state !== 0 && !s.base.states.some((st) => st.id === b.state)) return
     if (s.shrink) {
       const land = hits.map(([i]) => i).filter((i) => !isWaterBiome(s.base.biome[i]))
-      for (const i of shrinkState(s.stateId, mesh, land, b.state)) s.touched.add(i)
+      for (const i of shrinkState(s.stateId, mesh, land, b.state)) touch(s, i)
       return
     }
     for (const [i] of hits) {
       // Land-only, and only real changes: repainting a cell with its own kingdom is not an edit.
       if (isWaterBiome(s.base.biome[i]) || s.stateId[i] === b.state) continue
       s.stateId[i] = b.state
-      s.touched.add(i)
+      touch(s, i)
     }
     return
   }
@@ -124,7 +132,7 @@ function dab(s: BrushSession, x: number, y: number, b: Brush): void {
       if (isWaterBiome(s.base.biome[i])) continue // paint is land-only
       s.biome[i] = b.biome
       s.override[i] = b.biome
-      s.touched.add(i)
+      touch(s, i)
     }
     return
   }
@@ -138,15 +146,52 @@ function dab(s: BrushSession, x: number, y: number, b: Brush): void {
     })
     hits.forEach(([i], k) => {
       e[i] = clamp01(next[k])
-      s.touched.add(i)
+      touch(s, i)
     })
     return
   }
   const sign = s.tool === 'raise' ? 1 : -1
   for (const [i, w] of hits) {
     e[i] = clamp01(e[i] + sign * b.strength * RAISE_PER_DAB * w)
-    s.touched.add(i)
+    touch(s, i)
   }
+}
+
+/** The cells touched since the last call, for the renderer to redraw. */
+export function drainFresh(s: BrushSession): number[] {
+  const cells = [...s.fresh]
+  s.fresh.clear()
+  return cells
+}
+
+/**
+ * A cheap stand-in for commitSession while dragging. Terrain tools only flip the touched cells that crossed sea
+ * level, so relief and coast follow the brush; rivers, lakes and biomes wait for the real commit on release.
+ */
+export function previewSession(s: BrushSession): World | null {
+  if (s.tool === 'biome' || s.tool === 'kingdom' || s.touched.size === 0) return commitSession(s)
+  const { base } = s
+  const mesh = getMesh(base)
+  const biome = Uint8Array.from(base.biome)
+  for (const i of s.touched) {
+    const below = s.elevation[i] < base.seaLevel
+    if (below === base.elevation[i] < base.seaLevel) continue // a lake above sea level stays a lake
+    if (below) biome[i] = Biome.Ocean
+    else if (isWaterBiome(base.biome[i])) {
+      // New land looks like its first land neighbor; the real biome comes with the commit.
+      biome[i] = Biome.Grassland
+      for (let k = mesh.nOff[i]; k < mesh.nOff[i + 1]; k++) {
+        const n = base.biome[mesh.nIdx[k]]
+        if (!isWaterBiome(n)) {
+          biome[i] = n
+          break
+        }
+      }
+    }
+  }
+  const stateId = Uint16Array.from(base.stateId)
+  settleStates(stateId, biome, { biome: base.biome, mesh })
+  return { ...base, elevation: Float32Array.from(s.elevation), biome, stateId }
 }
 
 /** Builds the edited World (same points array, so the mesh cache still hits), or null if nothing changed. */
