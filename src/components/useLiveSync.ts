@@ -91,6 +91,52 @@ export interface UseLiveSyncOptions {
   onConflict?(message: string): void
 }
 
+export interface LiveSyncBuffer {
+  rev: number
+  paused: boolean
+  pendingRemote: LiveWorldEvent | null
+  queuedPush: { world: World; reason: string } | null
+}
+
+/** Handles an incoming SSE world event without advancing `rev` while paused (so local edits trigger conflict detection on resume). */
+export function receiveRemoteEvent(buf: LiveSyncBuffer, ev: LiveWorldEvent, clientId: string): 'ignore' | 'queued' | 'apply' {
+  if (ev.clientId && ev.clientId === clientId) {
+    if (!buf.paused) buf.rev = ev.rev
+    return 'ignore'
+  }
+  if (buf.paused) {
+    if (!ev.worldJson) return 'ignore'
+    buf.pendingRemote = ev
+    return 'queued'
+  }
+  buf.rev = ev.rev
+  return ev.worldJson ? 'apply' : 'ignore'
+}
+
+/** Queues the latest local world for upload; returns true when it should be flushed immediately. */
+export function queueLocalPush(buf: LiveSyncBuffer, world: World, reason: string): boolean {
+  buf.queuedPush = { world, reason }
+  return !buf.paused
+}
+
+/** Resumes sync: local edits made while paused win and are pushed (dropping any held-back remote event); otherwise applies the held-back event. */
+export function resumeSync(buf: LiveSyncBuffer): { action: 'push' } | { action: 'apply'; event: LiveWorldEvent } | { action: 'none' } {
+  buf.paused = false
+  const remote = buf.pendingRemote
+  buf.pendingRemote = null
+  if (buf.queuedPush) return { action: 'push' }
+  if (remote) {
+    buf.rev = remote.rev
+    return { action: 'apply', event: remote }
+  }
+  return { action: 'none' }
+}
+
+function activityLabel(ev: LiveWorldEvent): string {
+  const label = ev.highlights?.at(-1)?.label
+  return label ? `${ev.reason}: ${label}` : ev.reason
+}
+
 export function useLiveSync({ onRemoteWorld, onConflict }: UseLiveSyncOptions): LiveSyncController {
   const [initial] = useState(readInitialConfig)
   const [url, setUrl] = useState(initial.url)
@@ -105,20 +151,16 @@ export function useLiveSync({ onRemoteWorld, onConflict }: UseLiveSyncOptions): 
   const [conflict, setConflict] = useState<string | null>(null)
 
   const clientIdRef = useRef<string>(makeClientId())
-  const revRef = useRef(0)
-  const pausedRef = useRef(paused)
-  pausedRef.current = paused
+  const bufRef = useRef<LiveSyncBuffer>({ rev: 0, paused: false, pendingRemote: null, queuedPush: null })
   const autoFollowRef = useRef(autoFollow)
   autoFollowRef.current = autoFollow
-  const pendingEventRef = useRef<LiveWorldEvent | null>(null)
   const callbacksRef = useRef({ onRemoteWorld, onConflict })
   callbacksRef.current = { onRemoteWorld, onConflict }
   const connRef = useRef({ active, url, token, state })
   connRef.current = { active, url, token, state }
 
-  // Serialized push queue (keeps only the latest pending snapshot if multiple edits happen while a POST is in flight).
+  // Serialized push flag (queuedPush in bufRef keeps only the latest snapshot while a POST is in flight or paused).
   const pushingRef = useRef(false)
-  const queuedPushRef = useRef<{ world: World; reason: string } | null>(null)
 
   useEffect(() => {
     if (!active || !url || !token || typeof EventSource === 'undefined') {
@@ -140,17 +182,13 @@ export function useLiveSync({ onRemoteWorld, onConflict }: UseLiveSyncOptions): 
     es.addEventListener('world', (rawEvent) => {
       try {
         const ev = JSON.parse((rawEvent as MessageEvent<string>).data) as LiveWorldEvent
-        revRef.current = ev.rev
-        if (ev.clientId && ev.clientId === clientIdRef.current) return
-        if (!ev.worldJson) return
-
-        if (pausedRef.current) {
-          pendingEventRef.current = ev
+        const outcome = receiveRemoteEvent(bufRef.current, ev, clientIdRef.current)
+        if (outcome === 'ignore') return
+        if (outcome === 'queued') {
           setPendingCount((n) => n + 1)
           return
         }
-
-        setLastActivity(ev.highlight?.label ? `${ev.reason}: ${ev.highlight.label}` : ev.reason)
+        setLastActivity(activityLabel(ev))
         callbacksRef.current.onRemoteWorld(ev, autoFollowRef.current)
       } catch {
         setError('Evento recebido do MCP está corrompido.')
@@ -169,15 +207,17 @@ export function useLiveSync({ onRemoteWorld, onConflict }: UseLiveSyncOptions): 
 
   const flushPush = useCallback(async () => {
     if (pushingRef.current) return
-    const next = queuedPushRef.current
+    const buf = bufRef.current
+    const next = buf.queuedPush
     if (!next) return
     const { active: isActive, url: curUrl, token: curToken } = connRef.current
-    if (!isActive || !curUrl || !curToken || pausedRef.current) {
-      queuedPushRef.current = null
+    if (!isActive || !curUrl || !curToken) {
+      buf.queuedPush = null
       return
     }
+    if (buf.paused) return
 
-    queuedPushRef.current = null
+    buf.queuedPush = null
     pushingRef.current = true
     try {
       const cleanUrl = curUrl.replace(/\/+$/, '')
@@ -189,7 +229,7 @@ export function useLiveSync({ onRemoteWorld, onConflict }: UseLiveSyncOptions): 
         },
         body: JSON.stringify({
           worldJson: serializeWorld(next.world),
-          baseRev: revRef.current,
+          baseRev: buf.rev,
           clientId: clientIdRef.current,
           reason: next.reason,
         }),
@@ -198,7 +238,7 @@ export function useLiveSync({ onRemoteWorld, onConflict }: UseLiveSyncOptions): 
       if (!res.ok || !data.ok) {
         setError(data.error ?? `Falha ao sincronizar com MCP (HTTP ${res.status}).`)
       } else {
-        revRef.current = data.rev
+        buf.rev = data.rev
         setError(null)
         if (data.conflict) {
           const msg = 'Conflito de edição: sua alteração prevaleceu sobre uma atualização recente do MCP.'
@@ -210,16 +250,15 @@ export function useLiveSync({ onRemoteWorld, onConflict }: UseLiveSyncOptions): 
       setError('Não foi possível enviar a edição para o servidor MCP.')
     } finally {
       pushingRef.current = false
-      if (queuedPushRef.current) void flushPush()
+      if (buf.queuedPush && !buf.paused) void flushPush()
     }
   }, [])
 
   const pushWorld = useCallback(
     (world: World, reason = 'browser_edit') => {
       const { active: isActive, state: curState } = connRef.current
-      if (!isActive || curState !== 'connected' || pausedRef.current) return
-      queuedPushRef.current = { world, reason }
-      void flushPush()
+      if (!isActive || curState !== 'connected') return
+      if (queueLocalPush(bufRef.current, world, reason)) void flushPush()
     },
     [flushPush],
   )
@@ -233,8 +272,10 @@ export function useLiveSync({ onRemoteWorld, onConflict }: UseLiveSyncOptions): 
     }
     setUrl(cleanUrl)
     setToken(cleanToken)
+    bufRef.current.paused = false
+    bufRef.current.pendingRemote = null
+    bufRef.current.queuedPush = null
     setPaused(false)
-    pendingEventRef.current = null
     setPendingCount(0)
     setConflict(null)
     setError(null)
@@ -245,28 +286,32 @@ export function useLiveSync({ onRemoteWorld, onConflict }: UseLiveSyncOptions): 
   const disconnect = useCallback(() => {
     setActive(false)
     setState('disconnected')
+    bufRef.current.paused = false
+    bufRef.current.pendingRemote = null
+    bufRef.current.queuedPush = null
     setPaused(false)
-    pendingEventRef.current = null
-    queuedPushRef.current = null
     setPendingCount(0)
     setError(null)
     persistConfig({ url: connRef.current.url, token: connRef.current.token, autoConnect: false, autoFollow: autoFollowRef.current })
   }, [])
 
   const togglePause = useCallback(() => {
-    setPaused((prev) => {
-      const next = !prev
-      if (!next && pendingEventRef.current) {
-        const queued = pendingEventRef.current
-        pendingEventRef.current = null
-        setPendingCount(0)
-        setLastActivity(queued.highlight?.label ? `${queued.reason}: ${queued.highlight.label}` : queued.reason)
-        // Apply on microtask so state updates cleanly outside the state updater.
-        queueMicrotask(() => callbacksRef.current.onRemoteWorld(queued, autoFollowRef.current))
-      }
-      return next
-    })
-  }, [])
+    const buf = bufRef.current
+    if (!buf.paused) {
+      buf.paused = true
+      setPaused(true)
+      return
+    }
+    const res = resumeSync(buf)
+    setPaused(false)
+    setPendingCount(0)
+    if (res.action === 'push') {
+      void flushPush()
+    } else if (res.action === 'apply') {
+      setLastActivity(activityLabel(res.event))
+      callbacksRef.current.onRemoteWorld(res.event, autoFollowRef.current)
+    }
+  }, [flushPush])
 
   const setAutoFollow = useCallback((v: boolean) => {
     setAutoFollowState(v)

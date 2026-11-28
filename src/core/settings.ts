@@ -53,12 +53,12 @@ export interface OverlayBox {
   maxY: number
 }
 
-// Geometry mirrors render/decor.ts so placement logic and spatial tools avoid covering the compass or scale bar.
-const OVERLAY_MARGIN = 30
-const SCALE_MAX_FRAC = 0.18
-const COMPASS_R = 42
-const COMPASS_LABEL = 24
-const STACK_GAP = 60
+// Geometry shared with render/decor.ts so placement logic and spatial tools avoid covering the compass or scale bar.
+export const OVERLAY_MARGIN = 30
+export const SCALE_MAX_FRAC = 0.18
+export const COMPASS_R = 42
+export const COMPASS_LABEL = 24
+export const STACK_GAP = 60
 
 function cornerBox(corner: Corner, W: number, H: number, bw: number, bh: number, m: number, pad: number): OverlayBox {
   const x = corner[1] === 'l' ? m : W - m - bw

@@ -1,4 +1,5 @@
 // In-memory editing session for the MCP server: active World, undo/redo history, revision tracking, and safe path resolution.
+import os from 'node:os'
 import path from 'node:path'
 import { createHistory, type History } from '../core/history'
 import { reuseUnchangedWorldData, type LiveHighlight } from '../core/liveProtocol'
@@ -15,7 +16,6 @@ export interface SessionEditMeta {
   reason?: string
   source?: 'mcp' | 'browser'
   clientId?: string
-  highlight?: LiveHighlight
   highlights?: LiveHighlight[]
 }
 
@@ -26,7 +26,6 @@ export interface SessionChangeEvent {
   clientId?: string
   reason: string
   replaced: boolean
-  highlight?: LiveHighlight
   highlights?: LiveHighlight[]
 }
 
@@ -69,7 +68,6 @@ export class MapSession {
       clientId: meta.clientId,
       reason: meta.reason ?? (replaced ? 'replace' : 'edit'),
       replaced,
-      highlight: meta.highlight,
       highlights: meta.highlights,
     }
     for (const listener of this.listeners) listener(event)
@@ -156,9 +154,10 @@ export class MapSession {
 export function resolveSafePath(inputPath: string, rootDir?: string): string {
   const trimmed = inputPath.trim()
   if (!trimmed) throw new Error('Caminho de arquivo vazio.')
-  if (!rootDir) return path.resolve(trimmed)
+  const expanded = trimmed.replace(/^~(?=$|[\\/])/, os.homedir())
+  if (!rootDir) return path.resolve(expanded)
   const base = path.resolve(rootDir)
-  const resolved = path.resolve(base, trimmed)
+  const resolved = path.resolve(base, expanded)
   const rel = path.relative(base, resolved)
   if (rel.startsWith('..') || path.isAbsolute(rel)) {
     throw new Error(`Caminho "${inputPath}" fora do diretório permitido (${base}).`)

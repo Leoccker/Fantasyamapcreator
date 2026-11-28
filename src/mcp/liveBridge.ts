@@ -189,7 +189,6 @@ export class LiveBridge {
       reason: ev.reason,
       replaced: ev.replaced,
       worldJson: serializeWorld(ev.world),
-      highlight: ev.highlight,
       highlights: ev.highlights,
     }
     this.broadcast('world', payload)
