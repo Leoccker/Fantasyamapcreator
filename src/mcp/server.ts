@@ -1,0 +1,704 @@
+// MCP server definition: registers all map creation, spatial query, editing, and rendering tools.
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import path from 'node:path'
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
+import { z } from 'zod'
+import { Biome, LAND_BIOMES } from '../core/biomes'
+import { commitSession, startSession, strokeTo, type Brush, type BrushTool } from '../core/brush'
+import { DEFAULTS, generate } from '../core/generate'
+import { MARKER_KINDS, type MarkerKind } from '../core/icons'
+import { addLabel, addMarker, addState, patchItem, removeItem, type Sel } from '../core/items'
+import { generateKingdoms } from '../core/kingdoms'
+import { RADIUS_MIN, radiusDefault, radiusMax, SIZES, sizeById } from '../core/mapSize'
+import { CORNERS, GRID_TYPES, patchSettings } from '../core/settings'
+import { LIMITS, parseWorld, serializeWorld, TEXT_LIMITS, type World } from '../core/world'
+import { DEFAULT_LAYERS, LAYERS, type LayerId, type Layers } from '../render/draw'
+import { renderWorldPng, renderWorldSvg } from './renderHeadless'
+import { MapSession, resolveSafePath } from './session'
+import {
+  BIOME_KEYS,
+  compactWorldCounts,
+  findLocations,
+  inspectWorld,
+  LAND_BIOME_KEYS,
+  parseBiome,
+  parseLandBiome,
+  samplePoint,
+  type Quadrant,
+  type TerrainFilter,
+} from './spatial'
+
+export interface CreateServerOptions {
+  session?: MapSession
+  /** Optional directory jail for load/save/export paths (defaults to process.env.MAP_MCP_WORKDIR). */
+  workdir?: string
+}
+
+const SIZE_IDS = SIZES.map((s) => s.id) as ['small', 'medium', 'large', 'huge']
+const TERRAIN_FILTERS = ['any', 'land', 'water', 'ocean', 'lake', 'coast', 'mountain', 'lowland', 'river', 'river_mouth'] as const satisfies readonly TerrainFilter[]
+const QUADRANTS = ['nw', 'ne', 'sw', 'se', 'n', 's', 'w', 'e', 'center'] as const satisfies readonly Quadrant[]
+const BRUSH_TOOLS = ['raise', 'lower', 'smooth', 'biome', 'kingdom'] as const satisfies readonly BrushTool[]
+const LAYER_IDS = Object.keys(LAYERS) as LayerId[]
+
+function jsonResult(data: unknown) {
+  return {
+    content: [{ type: 'text' as const, text: JSON.stringify(data) }],
+  }
+}
+
+function errorResult(err: unknown) {
+  const message = err instanceof Error ? err.message : String(err)
+  return {
+    isError: true,
+    content: [{ type: 'text' as const, text: `Erro: ${message}` }],
+  }
+}
+
+async function writeFileEnsuringDir(filePath: string, data: string | Buffer): Promise<void> {
+  await mkdir(path.dirname(filePath), { recursive: true })
+  await writeFile(filePath, data)
+}
+
+export function createMapMcpServer(options: CreateServerOptions = {}): { server: McpServer; session: MapSession } {
+  const session = options.session ?? new MapSession()
+  const workdir = options.workdir ?? process.env.MAP_MCP_WORKDIR
+
+  const server = new McpServer({
+    name: 'fantasy-map-creator',
+    version: '0.1.0',
+  })
+
+  // 1. generate_world
+  server.registerTool(
+    'generate_world',
+    {
+      title: 'Gerar novo mapa',
+      description:
+        'Gera um novo mapa procedural determinístico na sessão ativa e retorna um resumo compacto. ' +
+        `Biomas de terra válidos: ${LAND_BIOME_KEYS.join(', ')}.`,
+      inputSchema: {
+        seed: z.string().min(1).max(120).optional().describe('Seed determinística do mapa (ex.: "arquipelago-norte").'),
+        size: z.enum(SIZE_IDS).optional().describe('Preset de tamanho: small (1000x625), medium (1600x1000), large (2400x1500), huge (3200x2000).'),
+        continents: z.number().int().min(LIMITS.continents[0]).max(LIMITS.continents[1]).optional().describe('Quantidade de continentes (1..6).'),
+        waterPct: z.number().min(LIMITS.waterPct[0]).max(LIMITS.waterPct[1]).optional().describe('Porcentagem aproximada de água (5..95).'),
+        kingdoms: z.number().int().min(LIMITS.kingdoms[0]).max(LIMITS.kingdoms[1]).optional().describe('Quantidade de reinos iniciais (0..12).'),
+        biomes: z.array(z.string()).optional().describe(`Subconjunto de biomas de terra permitidos: ${LAND_BIOME_KEYS.join(', ')}.`),
+        title: z.string().max(80).optional().describe('Título opcional exibido na moldura do mapa.'),
+      },
+    },
+    async (args) => {
+      try {
+        const preset = sizeById(args.size ?? 'medium')
+        let biomes = [...LAND_BIOMES]
+        if (args.biomes?.length) {
+          biomes = args.biomes.map((b) => {
+            const parsed = parseLandBiome(b)
+            if (parsed === null) throw new Error(`Bioma de terra inválido: "${b}". Válidos: ${LAND_BIOME_KEYS.join(', ')}.`)
+            return parsed
+          })
+        }
+        const seed = args.seed ?? `map-${Math.random().toString(36).slice(2, 10)}`
+        let world = generate({
+          seed,
+          width: preset.width,
+          height: preset.height,
+          cellCount: preset.cells,
+          continents: args.continents ?? DEFAULTS.continents,
+          waterPct: args.waterPct ?? DEFAULTS.waterPct,
+          kingdoms: args.kingdoms ?? DEFAULTS.kingdoms,
+          biomes,
+        })
+        if (args.title) world = patchSettings(world, { title: args.title })
+        session.setWorld(world, null)
+        return jsonResult({ ok: true, summary: inspectWorld(world) })
+      } catch (err) {
+        return errorResult(err)
+      }
+    },
+  )
+
+  // 2. load_world
+  server.registerTool(
+    'load_world',
+    {
+      title: 'Carregar mapa JSON',
+      description: 'Carrega e valida um arquivo .json salvo pelo Fantasy Map Creator na sessão ativa.',
+      inputSchema: {
+        filePath: z.string().min(1).describe('Caminho do arquivo .json do mapa.'),
+      },
+    },
+    async ({ filePath }) => {
+      try {
+        const resolved = resolveSafePath(filePath, workdir)
+        const raw = await readFile(resolved, 'utf8')
+        const world = parseWorld(raw)
+        session.setWorld(world, resolved)
+        return jsonResult({ ok: true, filePath: resolved, summary: inspectWorld(world) })
+      } catch (err) {
+        return errorResult(err)
+      }
+    },
+  )
+
+  // 3. save_world
+  server.registerTool(
+    'save_world',
+    {
+      title: 'Salvar mapa JSON',
+      description: 'Salva o mapa ativo em formato .json 100% compatível com o editor web do Fantasy Map Creator.',
+      inputSchema: {
+        filePath: z.string().min(1).optional().describe('Caminho de destino .json (opcional se o mapa já tiver um caminho associado).'),
+      },
+    },
+    async ({ filePath }) => {
+      try {
+        const world = session.requireWorld()
+        const target = filePath ? resolveSafePath(filePath, workdir) : session.filePath
+        if (!target) throw new Error('Informe `filePath` para salvar um mapa novo.')
+        const json = serializeWorld(world)
+        await writeFileEnsuringDir(target, json)
+        session.setFilePath(target)
+        return jsonResult({ ok: true, filePath: target, bytes: Buffer.byteLength(json, 'utf8') })
+      } catch (err) {
+        return errorResult(err)
+      }
+    },
+  )
+
+  // 4. undo_redo
+  server.registerTool(
+    'undo_redo',
+    {
+      title: 'Desfazer ou refazer edição',
+      description: 'Desfaz (undo) ou refaz (redo) a última alteração no mapa ativo, retornando um resumo compacto dos contadores.',
+      inputSchema: {
+        action: z.enum(['undo', 'redo']).describe('Ação a executar.'),
+      },
+    },
+    async ({ action }) => {
+      try {
+        const res = action === 'undo' ? session.undo() : session.redo()
+        return jsonResult({
+          ok: true,
+          action,
+          changed: res.changed,
+          status: session.status(),
+          counts: compactWorldCounts(res.world),
+          settings: res.world.settings,
+        })
+      } catch (err) {
+        return errorResult(err)
+      }
+    },
+  )
+
+  // 5. inspect_world
+  server.registerTool(
+    'inspect_world',
+    {
+      title: 'Inspecionar mapa',
+      description:
+        'Retorna um resumo estruturado e leve do mapa ativo: dimensões, distribuição de biomas, reinos (área, centro, fronteiras, acesso ao mar), principais rios, marcadores e rótulos.',
+      inputSchema: {},
+    },
+    async () => {
+      try {
+        const world = session.requireWorld()
+        return jsonResult({ status: session.status(), summary: inspectWorld(world) })
+      } catch (err) {
+        return errorResult(err)
+      }
+    },
+  )
+
+  // 6. sample_point
+  server.registerTool(
+    'sample_point',
+    {
+      title: 'Consultar ponto (x, y)',
+      description: 'Inspeciona o terreno, bioma, altitude, costa, rio, reino e marcadores próximos de uma coordenada (x, y).',
+      inputSchema: {
+        x: z.number().describe('Coordenada X em unidades do mapa (0..width).'),
+        y: z.number().describe('Coordenada Y em unidades do mapa (0..height).'),
+      },
+    },
+    async ({ x, y }) => {
+      try {
+        const world = session.requireWorld()
+        return jsonResult(samplePoint(world, x, y))
+      } catch (err) {
+        return errorResult(err)
+      }
+    },
+  )
+
+  // 7. find_locations
+  server.registerTool(
+    'find_locations',
+    {
+      title: 'Buscar coordenadas geográficas',
+      description:
+        'Encontra coordenadas bem distribuídas no mapa que satisfaçam critérios geográficos (ex.: costa de um reino, picos de montanha, foz de rio, fronteira entre dois reinos, áreas livres de outros marcadores). ' +
+        'Use sempre esta ferramenta antes de posicionar cidades, portos, fortalezas ou masmorras para garantir coerência geográfica.',
+      inputSchema: {
+        terrain: z.enum(TERRAIN_FILTERS).optional().describe('Filtro de terreno (padrão: "land").'),
+        biome: z.string().optional().describe(`Filtro de bioma específico (${BIOME_KEYS.join(', ')}).`),
+        kingdomId: z.number().int().min(0).optional().describe('ID do reino (0 = terras sem reino).'),
+        borderOfKingdoms: z
+          .tuple([z.number().int().min(1), z.number().int().min(1)])
+          .optional()
+          .describe('Par [idA, idB] para encontrar pontos na fronteira entre dois reinos.'),
+        quadrant: z.enum(QUADRANTS).optional().describe('Região do mapa: nw, ne, sw, se, n, s, w, e, center.'),
+        bounds: z
+          .object({ minX: z.number(), maxX: z.number(), minY: z.number(), maxY: z.number() })
+          .optional()
+          .describe('Retângulo delimitador opcional em unidades do mapa.'),
+        minDistanceFromMarkers: z.number().min(0).optional().describe('Distância mínima de marcadores já existentes.'),
+        minSpacing: z.number().min(0).optional().describe('Distância mínima entre os pontos retornados.'),
+        avoidOverlays: z.boolean().optional().describe('Evita áreas cobertas pela bússola e barra de escala (padrão: true).'),
+        limit: z.number().int().min(1).max(20).optional().describe('Quantidade máxima de locais sugeridos (padrão: 5).'),
+      },
+    },
+    async (args) => {
+      try {
+        const world = session.requireWorld()
+        let biome: Biome | undefined
+        if (args.biome) {
+          const parsed = parseBiome(args.biome)
+          if (parsed === null) throw new Error(`Bioma inválido: "${args.biome}". Válidos: ${BIOME_KEYS.join(', ')}.`)
+          biome = parsed
+        }
+        const result = findLocations(world, {
+          terrain: args.terrain,
+          biome,
+          kingdomId: args.kingdomId,
+          borderOfKingdoms: args.borderOfKingdoms,
+          quadrant: args.quadrant,
+          bounds: args.bounds,
+          minDistanceFromMarkers: args.minDistanceFromMarkers,
+          minSpacing: args.minSpacing,
+          avoidOverlays: args.avoidOverlays,
+          limit: args.limit,
+        })
+        return jsonResult(result)
+      } catch (err) {
+        return errorResult(err)
+      }
+    },
+  )
+
+  // 8. brush_stroke
+  server.registerTool(
+    'brush_stroke',
+    {
+      title: 'Aplicar traço de pincel',
+      description:
+        'Esculpe terreno (raise, lower, smooth), pinta biomas (biome) ou pinta/encolhe territórios de reinos (kingdom) ao longo de um ou mais pontos (x, y). ' +
+        'Para criar ilhas/montanhas use `raise`; para canais/mares use `lower`; para suavizar costas use `smooth`.',
+      inputSchema: {
+        tool: z.enum(BRUSH_TOOLS).describe('Ferramenta de pincel.'),
+        points: z
+          .array(z.object({ x: z.number(), y: z.number() }))
+          .min(1)
+          .max(200)
+          .describe('Sequência de pontos do traço em coordenadas do mapa.'),
+        radius: z.number().min(RADIUS_MIN).optional().describe('Raio do pincel em unidades do mapa.'),
+        strength: z.number().min(0.05).max(1).optional().describe('Força do pincel (0.05..1, padrão: 0.6).'),
+        passes: z.number().int().min(1).max(10).optional().describe('Repetições do traço para levantar montanhas/escavar mais fundo (padrão: 1).'),
+        biome: z.string().optional().describe(`Obrigatório para tool="biome". Biomas de terra: ${LAND_BIOME_KEYS.join(', ')}.`),
+        kingdomId: z.number().int().min(0).optional().describe('Obrigatório para tool="kingdom" (0 apaga território).'),
+        shrink: z.boolean().optional().describe('Apenas para tool="kingdom": true remove células da borda desse reino.'),
+      },
+    },
+    async (args) => {
+      try {
+        const current = session.requireWorld()
+        const radius = Math.min(radiusMax(current), Math.max(RADIUS_MIN, args.radius ?? radiusDefault(current)))
+        const strength = args.strength ?? 0.6
+        const passes = args.passes ?? 1
+
+        let biome: Biome = Biome.Forest
+        if (args.tool === 'biome') {
+          if (!args.biome) throw new Error('Informe `biome` quando tool="biome".')
+          const parsed = parseLandBiome(args.biome)
+          if (parsed === null) throw new Error(`Bioma de terra inválido: "${args.biome}". Válidos: ${LAND_BIOME_KEYS.join(', ')}.`)
+          biome = parsed
+        }
+
+        let state = 0
+        if (args.tool === 'kingdom') {
+          if (args.kingdomId === undefined) throw new Error('Informe `kingdomId` quando tool="kingdom" (0 apaga território).')
+          if (args.kingdomId !== 0 && !current.states.some((s) => s.id === args.kingdomId)) {
+            throw new Error(`Reino id=${args.kingdomId} não existe. Use \`manage_kingdoms\` ou \`inspect_world\`.`)
+          }
+          state = args.kingdomId
+        }
+
+        const brush: Brush = { radius, strength, biome, state, marker: 'city' }
+        let touchedCount = 0
+        const { world, changed } = session.edit((w) => {
+          const s = startSession(w, args.tool, Boolean(args.shrink))
+          for (let p = 0; p < passes; p++) {
+            s.last = null
+            for (const pt of args.points) strokeTo(s, pt.x, pt.y, brush)
+          }
+          touchedCount = s.touched.size
+          return commitSession(s) ?? w
+        })
+
+        return jsonResult({
+          ok: true,
+          changed,
+          touchedCells: touchedCount,
+          meta: inspectWorld(world).meta,
+        })
+      } catch (err) {
+        return errorResult(err)
+      }
+    },
+  )
+
+  // 9. regenerate_kingdoms
+  server.registerTool(
+    'regenerate_kingdoms',
+    {
+      title: 'Regerar reinos',
+      description: 'Regera reinos, capitais e vilas automaticamente no terreno atual, preservando marcadores e rótulos criados manualmente.',
+      inputSchema: {
+        count: z.number().int().min(LIMITS.kingdoms[0]).max(LIMITS.kingdoms[1]).describe('Quantidade de reinos (0..12).'),
+        variant: z.number().int().min(0).optional().describe('Número de variação para gerar outra distribuição mantendo o mesmo terreno.'),
+      },
+    },
+    async ({ count, variant }) => {
+      try {
+        const { world } = session.edit((w) => generateKingdoms(w, count, variant ?? 0))
+        return jsonResult({ ok: true, kingdoms: inspectWorld(world).kingdoms })
+      } catch (err) {
+        return errorResult(err)
+      }
+    },
+  )
+
+  // 10. manage_markers
+  server.registerTool(
+    'manage_markers',
+    {
+      title: 'Gerenciar marcadores',
+      description:
+        'Adiciona, atualiza ou remove marcadores no mapa (suporta lote via `operations`). ' +
+        `Tipos válidos (kind): ${MARKER_KINDS.join(', ')}.`,
+      inputSchema: {
+        operations: z
+          .array(
+            z.discriminatedUnion('action', [
+              z.object({
+                action: z.literal('add'),
+                kind: z.enum(MARKER_KINDS as [MarkerKind, ...MarkerKind[]]).describe('Tipo do ícone do marcador.'),
+                x: z.number(),
+                y: z.number(),
+                name: z.string().max(TEXT_LIMITS.name).optional().describe('Nome do local (se omitido, gera automaticamente).'),
+                notes: z.string().max(TEXT_LIMITS.notes).optional().describe('Notas/lore de RPG sobre o local.'),
+                capitalOfKingdomId: z
+                  .number()
+                  .int()
+                  .min(1)
+                  .optional()
+                  .describe('Opcional: vincula este novo marcador como capital do reino informado.'),
+              }),
+              z.object({
+                action: z.literal('update'),
+                id: z.number().int().min(1),
+                kind: z.enum(MARKER_KINDS as [MarkerKind, ...MarkerKind[]]).optional(),
+                x: z.number().optional(),
+                y: z.number().optional(),
+                name: z.string().max(TEXT_LIMITS.name).optional(),
+                notes: z.string().max(TEXT_LIMITS.notes).optional(),
+              }),
+              z.object({
+                action: z.literal('remove'),
+                id: z.number().int().min(1),
+              }),
+            ]),
+          )
+          .min(1)
+          .max(100),
+      },
+    },
+    async ({ operations }) => {
+      try {
+        const results: { action: string; id: number; ok: boolean; error?: string }[] = []
+        const { world, changed } = session.edit((startWorld) => {
+          let w: World = startWorld
+          for (const op of operations) {
+            if (op.action === 'add') {
+              const [added, sel] = addMarker(w, op.kind, op.x, op.y)
+              w = added
+              if (op.name !== undefined || op.notes !== undefined) {
+                w = patchItem(w, sel, { name: op.name, notes: op.notes })
+              }
+              if (op.capitalOfKingdomId !== undefined) {
+                if (!w.states.some((s) => s.id === op.capitalOfKingdomId)) {
+                  results.push({ action: 'add', id: sel.id, ok: false, error: `Reino id=${op.capitalOfKingdomId} não encontrado para vincular capital.` })
+                  continue
+                }
+                w = patchItem(w, { type: 'state', id: op.capitalOfKingdomId }, { capital: sel.id })
+              }
+              results.push({ action: 'add', id: sel.id, ok: true })
+            } else if (op.action === 'update') {
+              const sel: Sel = { type: 'marker', id: op.id }
+              if (!w.markers.some((m) => m.id === op.id)) {
+                results.push({ action: 'update', id: op.id, ok: false, error: 'Marcador não encontrado.' })
+                continue
+              }
+              w = patchItem(w, sel, { kind: op.kind, x: op.x, y: op.y, name: op.name, notes: op.notes })
+              results.push({ action: 'update', id: op.id, ok: true })
+            } else {
+              const sel: Sel = { type: 'marker', id: op.id }
+              if (!w.markers.some((m) => m.id === op.id)) {
+                results.push({ action: 'remove', id: op.id, ok: false, error: 'Marcador não encontrado.' })
+                continue
+              }
+              w = removeItem(w, sel)
+              results.push({ action: 'remove', id: op.id, ok: true })
+            }
+          }
+          return w
+        })
+        return jsonResult({ ok: true, changed, results, totalMarkers: world.markers.length })
+      } catch (err) {
+        return errorResult(err)
+      }
+    },
+  )
+
+  // 11. manage_labels
+  server.registerTool(
+    'manage_labels',
+    {
+      title: 'Gerenciar rótulos',
+      description: 'Adiciona, atualiza ou remove rótulos de texto livre no mapa (nomes de oceanos, cordilheiras, regiões, reinos).',
+      inputSchema: {
+        operations: z
+          .array(
+            z.discriminatedUnion('action', [
+              z.object({
+                action: z.literal('add'),
+                x: z.number(),
+                y: z.number(),
+                text: z.string().min(1).max(TEXT_LIMITS.label).optional(),
+                size: z.number().min(TEXT_LIMITS.labelSize[0]).max(TEXT_LIMITS.labelSize[1]).optional(),
+                rotation: z.number().min(-180).max(180).optional(),
+              }),
+              z.object({
+                action: z.literal('update'),
+                id: z.number().int().min(1),
+                x: z.number().optional(),
+                y: z.number().optional(),
+                text: z.string().min(1).max(TEXT_LIMITS.label).optional(),
+                size: z.number().min(TEXT_LIMITS.labelSize[0]).max(TEXT_LIMITS.labelSize[1]).optional(),
+                rotation: z.number().min(-180).max(180).optional(),
+              }),
+              z.object({
+                action: z.literal('remove'),
+                id: z.number().int().min(1),
+              }),
+            ]),
+          )
+          .min(1)
+          .max(100),
+      },
+    },
+    async ({ operations }) => {
+      try {
+        const results: { action: string; id: number; ok: boolean; error?: string }[] = []
+        const { world, changed } = session.edit((startWorld) => {
+          let w: World = startWorld
+          for (const op of operations) {
+            if (op.action === 'add') {
+              const [added, sel] = addLabel(w, op.x, op.y)
+              w = added
+              if (op.text !== undefined || op.size !== undefined || op.rotation !== undefined) {
+                w = patchItem(w, sel, { text: op.text, size: op.size, rotation: op.rotation })
+              }
+              results.push({ action: 'add', id: sel.id, ok: true })
+            } else if (op.action === 'update') {
+              const sel: Sel = { type: 'label', id: op.id }
+              if (!w.labels.some((l) => l.id === op.id)) {
+                results.push({ action: 'update', id: op.id, ok: false, error: 'Rótulo não encontrado.' })
+                continue
+              }
+              w = patchItem(w, sel, { x: op.x, y: op.y, text: op.text, size: op.size, rotation: op.rotation })
+              results.push({ action: 'update', id: op.id, ok: true })
+            } else {
+              const sel: Sel = { type: 'label', id: op.id }
+              if (!w.labels.some((l) => l.id === op.id)) {
+                results.push({ action: 'remove', id: op.id, ok: false, error: 'Rótulo não encontrado.' })
+                continue
+              }
+              w = removeItem(w, sel)
+              results.push({ action: 'remove', id: op.id, ok: true })
+            }
+          }
+          return w
+        })
+        return jsonResult({ ok: true, changed, results, totalLabels: world.labels.length })
+      } catch (err) {
+        return errorResult(err)
+      }
+    },
+  )
+
+  // 12. manage_kingdoms
+  server.registerTool(
+    'manage_kingdoms',
+    {
+      title: 'Gerenciar reinos',
+      description:
+        'Cria um novo reino vazio (para pintar depois com `brush_stroke` tool="kingdom") ou atualiza nome, cor (#rrggbb) e capital (`capitalId`, ID de um marcador existente ou null para desvincular).',
+      inputSchema: {
+        action: z.enum(['add', 'update']),
+        id: z.number().int().min(1).optional().describe('ID do reino (obrigatório quando action="update").'),
+        name: z.string().min(1).max(TEXT_LIMITS.name).optional(),
+        color: z
+          .string()
+          .regex(/^#[0-9a-fA-F]{6}$/, 'Cor deve estar no formato hexadecimal #rrggbb.')
+          .optional(),
+        capitalId: z
+          .number()
+          .int()
+          .min(1)
+          .nullable()
+          .optional()
+          .describe('ID do marcador a definir como capital do reino (ou null para deixar sem capital).'),
+      },
+    },
+    async (args) => {
+      try {
+        let targetId = args.id ?? 0
+        const { world, changed } = session.edit((w) => {
+          if (args.capitalId !== undefined && args.capitalId !== null && !w.markers.some((m) => m.id === args.capitalId)) {
+            throw new Error(`Marcador id=${args.capitalId} não encontrado para definir como capital.`)
+          }
+          if (args.action === 'add') {
+            const [added, sel] = addState(w)
+            targetId = sel.id
+            return args.name || args.color || args.capitalId !== undefined
+              ? patchItem(added, sel, { name: args.name, color: args.color, capital: args.capitalId })
+              : added
+          }
+          if (!args.id) throw new Error('Informe `id` quando action="update".')
+          if (!w.states.some((s) => s.id === args.id)) throw new Error(`Reino id=${args.id} não encontrado.`)
+          return patchItem(w, { type: 'state', id: args.id }, { name: args.name, color: args.color, capital: args.capitalId })
+        })
+        const state = world.states.find((s) => s.id === targetId)
+        return jsonResult({ ok: true, changed, kingdom: state ?? null })
+      } catch (err) {
+        return errorResult(err)
+      }
+    },
+  )
+
+  // 13. update_settings
+  server.registerTool(
+    'update_settings',
+    {
+      title: 'Atualizar configurações do mapa',
+      description: 'Altera título na moldura, tipo e tamanho da grade (hex/square), escala em km/unidade e posição da bússola e barra de escala.',
+      inputSchema: {
+        title: z.string().max(80).optional(),
+        gridType: z.enum(GRID_TYPES).optional(),
+        gridKm: z.number().min(0.1).max(10000).optional(),
+        kmPerUnit: z.number().min(0.01).max(1000).optional(),
+        scaleCorner: z.enum(CORNERS).optional(),
+        compassCorner: z.enum(CORNERS).optional(),
+      },
+    },
+    async (args) => {
+      try {
+        const { world, changed } = session.edit((w) => patchSettings(w, args))
+        return jsonResult({ ok: true, changed, settings: world.settings })
+      } catch (err) {
+        return errorResult(err)
+      }
+    },
+  )
+
+  // 14. render_preview
+  const layersShape = Object.fromEntries(LAYER_IDS.map((id) => [id, z.boolean().optional()])) as Record<LayerId, z.ZodOptional<z.ZodBoolean>>
+  server.registerTool(
+    'render_preview',
+    {
+      title: 'Renderizar prévia visual (PNG / SVG)',
+      description:
+        'Renderiza o mapa atual para visualização direta (retorna imagem PNG para você inspecionar o layout, sobreposições e estética) ' +
+        'e opcionalmente exporta o arquivo PNG ou SVG em disco.',
+      inputSchema: {
+        layers: z.object(layersShape).optional().describe(`Camadas opcionais para ligar/desligar (padrão: ${JSON.stringify(DEFAULT_LAYERS)}).`),
+        maxWidth: z.number().int().min(256).max(4096).optional().describe('Largura máxima do PNG em pixels (padrão: 1024).'),
+        outputPath: z.string().min(1).optional().describe('Caminho opcional para salvar a imagem (.png ou .svg).'),
+        returnImage: z.boolean().optional().describe('Se true (padrão), inclui a imagem PNG na resposta para inspeção visual.'),
+      },
+    },
+    async (args) => {
+      try {
+        const world = session.requireWorld()
+        const layers = args.layers as Partial<Layers> | undefined
+        const returnImage = args.returnImage ?? true
+        let savedPath: string | null = null
+        let savedFormat: 'svg' | 'png' | null = null
+        let pngResult: { png: Buffer; width: number; height: number } | null = null
+
+        if (args.outputPath) {
+          savedPath = resolveSafePath(args.outputPath, workdir)
+          if (savedPath.toLowerCase().endsWith('.svg')) {
+            const svg = renderWorldSvg(world, { layers, maxWidth: args.maxWidth })
+            await writeFileEnsuringDir(savedPath, svg)
+            savedFormat = 'svg'
+          } else {
+            pngResult = renderWorldPng(world, { layers, maxWidth: args.maxWidth })
+            await writeFileEnsuringDir(savedPath, pngResult.png)
+            savedFormat = 'png'
+          }
+        }
+
+        if (returnImage && !pngResult) {
+          pngResult = renderWorldPng(world, { layers, maxWidth: args.maxWidth })
+        }
+
+        const content: (
+          | { type: 'text'; text: string }
+          | { type: 'image'; data: string; mimeType: string }
+        )[] = [
+          {
+            type: 'text',
+            text: JSON.stringify(
+              {
+                ok: true,
+                width: pngResult?.width ?? world.width,
+                height: pngResult?.height ?? world.height,
+                savedPath,
+                savedFormat,
+              },
+              null,
+              2,
+            ),
+          },
+        ]
+
+        if (returnImage && pngResult) {
+          content.push({
+            type: 'image',
+            data: pngResult.png.toString('base64'),
+            mimeType: 'image/png',
+          })
+        }
+
+        return { content }
+      } catch (err) {
+        return errorResult(err)
+      }
+    },
+  )
+
+  return { server, session }
+}

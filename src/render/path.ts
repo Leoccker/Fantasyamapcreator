@@ -7,8 +7,8 @@ export type PathSink = Pick<CanvasPath, 'moveTo' | 'lineTo' | 'quadraticCurveTo'
 const sources = new WeakMap<object, () => string>()
 
 export function makePath(build: (p: PathSink) => void): Path2D {
-  const p = new Path2D()
-  build(p)
+  const p = typeof Path2D !== 'undefined' ? new Path2D() : ({} as Path2D)
+  if (typeof Path2D !== 'undefined') build(p)
   sources.set(p, () => {
     const d = new PathData()
     build(d)
@@ -18,7 +18,7 @@ export function makePath(build: (p: PathSink) => void): Path2D {
 }
 
 export function pathFromData(d: string): Path2D {
-  const p = new Path2D(d)
+  const p = typeof Path2D !== 'undefined' ? new Path2D(d) : ({} as Path2D)
   sources.set(p, () => d)
   return p
 }
