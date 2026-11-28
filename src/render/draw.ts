@@ -311,8 +311,6 @@ function drawCellTint(
     path.addPath(p)
   }
   l.save()
-  l.filter = `blur(${3 * scale}px)` // filter radius is in device pixels, not affected by the transform
-  l.globalAlpha = alpha
   for (const [color, path] of byColor) {
     l.fillStyle = color
     l.fill(path)
@@ -320,6 +318,12 @@ function drawCellTint(
     l.lineWidth = 1
     l.stroke(path)
   }
+  // One blur over every colour, not one per colour: those blurs (radius grows with zoom) dominated the zoomed re-draw.
+  l.setTransform(1, 0, 0, 1, 0, 0)
+  l.filter = `blur(${3 * scale}px)` // filter radius is in device pixels
+  l.globalAlpha = alpha
+  l.globalCompositeOperation = 'copy'
+  l.drawImage(l.canvas, 0, 0)
   l.restore()
   l.globalCompositeOperation = 'destination-in'
   l.fill(land, 'evenodd')

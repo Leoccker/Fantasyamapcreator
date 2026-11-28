@@ -39,7 +39,7 @@ export const MAX_CANVAS = 8192
 // Maps longer than Grande have their cached map drawn at 1x whatever the pixel ratio.
 const BIG_MAP = sizeById('large').width
 // How long the view must stay still before the sharp re-draw (it costs a full drawWorld).
-const DETAIL_DELAY_MS = 150
+const DETAIL_DELAY_MS = 350 // longer than the gap between wheel notches, so it doesn't fire mid-zoom
 
 /** Draws the map at `scale` with a `pad` (map units) margin around it, for the frame. */
 export function renderTo(w: World, scale: number, layers: Layers, canvas = document.createElement('canvas'), pad = 0, baseOnly = false) {
@@ -123,7 +123,7 @@ export function createRenderer(canvas: HTMLCanvasElement, initialLayers: Layers)
     if (sharp) ctx.drawImage(detail!, 0, 0) // already at screen resolution, drawn without a transform
     ctx.setTransform(s, 0, 0, s, ox, oy)
     if (!sharp) {
-      ctx.imageSmoothingQuality = 'high'
+      ctx.imageSmoothingQuality = view.zoom > 1 ? 'low' : 'high' // zoomed in it's a stand-in until the sharp re-draw
       ctx.drawImage(cache, 0, 0, world.width, world.height)
     }
     drawAnnotations(ctx, world, { layers, textReady, selection, drag, pad: framePad(world, layers.frame) })
@@ -135,9 +135,14 @@ export function createRenderer(canvas: HTMLCanvasElement, initialLayers: Layers)
     if (destroyed || previewing || !world || view.zoom <= 1) return
     const { cw, ch, s, ox, oy, key } = screen(world)
     detail ??= document.createElement('canvas')
-    detail.width = cw
-    detail.height = ch
-    drawWorld(detail.getContext('2d')!, world, s, layers, ox, oy)
+    if (detail.width !== cw || detail.height !== ch) {
+      detail.width = cw
+      detail.height = ch
+    }
+    const dc = detail.getContext('2d')!
+    dc.setTransform(1, 0, 0, 1, 0, 0) // same size: clear it instead of reallocating it
+    dc.clearRect(0, 0, cw, ch)
+    drawWorld(dc, world, s, layers, ox, oy)
     detailKey = key
     schedule()
   }
