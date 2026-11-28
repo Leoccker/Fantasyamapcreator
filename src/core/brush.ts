@@ -129,7 +129,7 @@ function dab(s: BrushSession, x: number, y: number, b: Brush): void {
   }
   if (s.tool === 'biome') {
     for (const [i] of hits) {
-      if (isWaterBiome(s.base.biome[i])) continue // paint is land-only
+      if (isWaterBiome(s.base.biome[i]) || (s.override[i] === b.biome && s.biome[i] === b.biome)) continue // paint is land-only
       s.biome[i] = b.biome
       s.override[i] = b.biome
       touch(s, i)

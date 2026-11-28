@@ -110,24 +110,31 @@ export function App() {
     if (!ev.worldJson) return
     try {
       const parsed = parseWorld(ev.worldJson)
-      const prev = worldRef.current
-      const merged = reuseUnchangedWorldData(prev, parsed)
-      if (prev.width !== merged.width || prev.height !== merged.height) {
-        setBrush((b) => ({ ...b, radius: scaleRadius(b.radius, prev, merged) }))
-      }
-      history.push(prev)
-      setWorld(merged)
-      if (ev.replaced || merged.points !== prev.points || merged.seed !== prev.seed) {
-        setForm(toForm(merged))
-      }
-      say(describeLiveReason(ev.reason, ev.highlight))
-      const highlights = ev.highlights?.length ? ev.highlights : ev.highlight ? [ev.highlight] : []
-      if (highlights.length) {
-        setLivePulse((p) => ({ highlights, n: (p?.n ?? 0) + 1 }))
-        if (follow) {
-          const pt = highlightCenter(highlights[highlights.length - 1])
-          setFocus((f) => ({ ...pt, n: (f?.n ?? 0) + 1 }))
+      const apply = () => {
+        const prev = worldRef.current
+        const merged = reuseUnchangedWorldData(prev, parsed)
+        if (prev.width !== merged.width || prev.height !== merged.height) {
+          setBrush((b) => ({ ...b, radius: scaleRadius(b.radius, prev, merged) }))
         }
+        history.push(prev)
+        setWorld(merged)
+        if (ev.replaced || merged.points !== prev.points || merged.seed !== prev.seed) {
+          setForm(toForm(merged))
+        }
+        const highlights = ev.highlights ?? []
+        say(describeLiveReason(ev.reason, highlights.at(-1)))
+        if (highlights.length) {
+          setLivePulse((p) => ({ highlights, n: (p?.n ?? 0) + 1 }))
+          if (follow) {
+            const pt = highlightCenter(highlights[highlights.length - 1])
+            setFocus((f) => ({ ...pt, n: (f?.n ?? 0) + 1 }))
+          }
+        }
+      }
+      if (ev.reason === 'sync' && (edited.current || hasHandEdits(worldRef.current))) {
+        setPendingDiscard(() => apply)
+      } else {
+        apply()
       }
     } catch (err) {
       say(`Erro ao aplicar atualização do MCP: ${(err as Error).message}`, true)

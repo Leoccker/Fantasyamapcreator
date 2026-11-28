@@ -122,15 +122,15 @@ describe('LiveBridge', () => {
       expect(genEv.worldJson).toBeTruthy()
       expect(parseWorld(genEv.worldJson!).seed).toBe('bridge-test')
 
-      // 5. MCP edits with highlight -> pushed over SSE with highlight metadata
+      // 5. MCP edits with highlights -> pushed over SSE with highlight metadata
       session.edit((w) => addMarker(w, 'port', 420, 260)[0], {
         reason: 'manage_markers',
-        highlight: { kind: 'point', x: 420, y: 260, label: 'Porto Vivo' },
+        highlights: [{ kind: 'point', x: 420, y: 260, label: 'Porto Vivo' }],
       })
       const editEv = await sse.nextEvent()
       expect(editEv.rev).toBe(2)
       expect(editEv.replaced).toBe(false)
-      expect(editEv.highlight).toEqual({ kind: 'point', x: 420, y: 260, label: 'Porto Vivo' })
+      expect(editEv.highlights).toEqual([{ kind: 'point', x: 420, y: 260, label: 'Porto Vivo' }])
 
       // 6. Browser pushes edit cleanly (matching baseRev -> conflict: false)
       const [browserEdited] = addMarker(session.world!, 'castle', 500, 320)

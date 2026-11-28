@@ -1,5 +1,5 @@
 // MCP server definition: registers all map creation, spatial query, editing, and rendering tools.
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { z } from 'zod'
@@ -7,11 +7,11 @@ import { Biome, LAND_BIOMES } from '../core/biomes'
 import { commitSession, startSession, strokeTo, type Brush, type BrushTool } from '../core/brush'
 import { DEFAULTS, generate } from '../core/generate'
 import { MARKER_KINDS, type MarkerKind } from '../core/icons'
-import { addLabel, addMarker, addState, patchItem, removeItem, type Sel } from '../core/items'
+import { addLabel, addMarker, addState, patchItem, removeItem, type Patch, type Sel } from '../core/items'
 import { generateKingdoms } from '../core/kingdoms'
 import type { LiveHighlight } from '../core/liveProtocol'
 import { RADIUS_MIN, radiusDefault, radiusMax, SIZES, sizeById } from '../core/mapSize'
-import { CORNERS, GRID_TYPES, patchSettings } from '../core/settings'
+import { CORNERS, GRID_TYPES, patchSettings, SETTINGS_LIMITS } from '../core/settings'
 import { LIMITS, parseWorld, serializeWorld, TEXT_LIMITS, type World } from '../core/world'
 import { DEFAULT_LAYERS, LAYERS, type LayerId, type Layers } from '../render/draw'
 import { LiveBridge } from './liveBridge'
@@ -49,17 +49,68 @@ function jsonResult(data: unknown) {
   }
 }
 
-function errorResult(err: unknown) {
-  const message = err instanceof Error ? err.message : String(err)
-  return {
-    isError: true,
-    content: [{ type: 'text' as const, text: `Erro: ${message}` }],
-  }
-}
-
 async function writeFileEnsuringDir(filePath: string, data: string | Buffer): Promise<void> {
   await mkdir(path.dirname(filePath), { recursive: true })
-  await writeFile(filePath, data)
+  const tmpPath = `${filePath}.tmp`
+  await writeFile(tmpPath, data)
+  await rename(tmpPath, filePath)
+}
+
+type BatchOpResult = { action: string; id?: number; ok: boolean; error?: string }
+
+function runItemBatch<
+  TItem extends { id: number; x: number; y: number },
+  TOp extends { action: 'add' } | { action: 'update'; id: number } | { action: 'remove'; id: number },
+>(
+  session: MapSession,
+  operations: TOp[],
+  cfg: {
+    reason: string
+    type: 'marker' | 'label'
+    notFound: string
+    list: (w: World) => TItem[]
+    label: (item: TItem) => string
+    add: (w: World, op: Extract<TOp, { action: 'add' }>) => { world: World; id: number } | { error: string }
+    updatePatch: (op: Extract<TOp, { action: 'update' }>) => Patch
+  },
+) {
+  const results: BatchOpResult[] = []
+  const highlights: LiveHighlight[] = []
+  const { world, changed } = session.edit(
+    (startWorld) => {
+      let w = startWorld
+      for (const op of operations) {
+        if (op.action === 'add') {
+          const added = cfg.add(w, op as Extract<TOp, { action: 'add' }>)
+          if ('error' in added) {
+            results.push({ action: 'add', ok: false, error: added.error })
+            continue
+          }
+          w = added.world
+          const created = cfg.list(w).find((it) => it.id === added.id)
+          if (created) highlights.push({ kind: 'point', x: created.x, y: created.y, label: cfg.label(created) })
+          results.push({ action: 'add', id: added.id, ok: true })
+        } else {
+          if (!cfg.list(w).some((it) => it.id === op.id)) {
+            results.push({ action: op.action, id: op.id, ok: false, error: cfg.notFound })
+            continue
+          }
+          const sel: Sel = { type: cfg.type, id: op.id }
+          if (op.action === 'update') {
+            w = patchItem(w, sel, cfg.updatePatch(op as Extract<TOp, { action: 'update' }>))
+            const updated = cfg.list(w).find((it) => it.id === op.id)
+            if (updated) highlights.push({ kind: 'point', x: updated.x, y: updated.y, label: cfg.label(updated) })
+          } else {
+            w = removeItem(w, sel)
+          }
+          results.push({ action: op.action, id: op.id, ok: true })
+        }
+      }
+      return w
+    },
+    { reason: cfg.reason, highlights },
+  )
+  return { world, changed, results }
 }
 
 export function createMapMcpServer(options: CreateServerOptions = {}): { server: McpServer; session: MapSession; liveBridge: LiveBridge } {
@@ -87,37 +138,33 @@ export function createMapMcpServer(options: CreateServerOptions = {}): { server:
         waterPct: z.number().min(LIMITS.waterPct[0]).max(LIMITS.waterPct[1]).optional().describe('Porcentagem aproximada de água (5..95).'),
         kingdoms: z.number().int().min(LIMITS.kingdoms[0]).max(LIMITS.kingdoms[1]).optional().describe('Quantidade de reinos iniciais (0..12).'),
         biomes: z.array(z.string()).optional().describe(`Subconjunto de biomas de terra permitidos: ${LAND_BIOME_KEYS.join(', ')}.`),
-        title: z.string().max(80).optional().describe('Título opcional exibido na moldura do mapa.'),
+        title: z.string().max(SETTINGS_LIMITS.title).optional().describe('Título opcional exibido na moldura do mapa.'),
       },
     },
     async (args) => {
-      try {
-        const preset = sizeById(args.size ?? 'medium')
-        let biomes = [...LAND_BIOMES]
-        if (args.biomes?.length) {
-          biomes = args.biomes.map((b) => {
-            const parsed = parseLandBiome(b)
-            if (parsed === null) throw new Error(`Bioma de terra inválido: "${b}". Válidos: ${LAND_BIOME_KEYS.join(', ')}.`)
-            return parsed
-          })
-        }
-        const seed = args.seed ?? `map-${Math.random().toString(36).slice(2, 10)}`
-        let world = generate({
-          seed,
-          width: preset.width,
-          height: preset.height,
-          cellCount: preset.cells,
-          continents: args.continents ?? DEFAULTS.continents,
-          waterPct: args.waterPct ?? DEFAULTS.waterPct,
-          kingdoms: args.kingdoms ?? DEFAULTS.kingdoms,
-          biomes,
+      const preset = sizeById(args.size ?? 'medium')
+      let biomes = [...LAND_BIOMES]
+      if (args.biomes?.length) {
+        biomes = args.biomes.map((b) => {
+          const parsed = parseLandBiome(b)
+          if (parsed === null) throw new Error(`Bioma de terra inválido: "${b}". Válidos: ${LAND_BIOME_KEYS.join(', ')}.`)
+          return parsed
         })
-        if (args.title) world = patchSettings(world, { title: args.title })
-        session.setWorld(world, null, { reason: 'generate_world' })
-        return jsonResult({ ok: true, summary: inspectWorld(world) })
-      } catch (err) {
-        return errorResult(err)
       }
+      const seed = args.seed ?? `map-${Math.random().toString(36).slice(2, 10)}`
+      let world = generate({
+        seed,
+        width: preset.width,
+        height: preset.height,
+        cellCount: preset.cells,
+        continents: args.continents ?? DEFAULTS.continents,
+        waterPct: args.waterPct ?? DEFAULTS.waterPct,
+        kingdoms: args.kingdoms ?? DEFAULTS.kingdoms,
+        biomes,
+      })
+      if (args.title) world = patchSettings(world, { title: args.title })
+      session.setWorld(world, null, { reason: 'generate_world' })
+      return jsonResult({ ok: true, summary: inspectWorld(world) })
     },
   )
 
@@ -132,15 +179,11 @@ export function createMapMcpServer(options: CreateServerOptions = {}): { server:
       },
     },
     async ({ filePath }) => {
-      try {
-        const resolved = resolveSafePath(filePath, workdir)
-        const raw = await readFile(resolved, 'utf8')
-        const world = parseWorld(raw)
-        session.setWorld(world, resolved, { reason: 'load_world' })
-        return jsonResult({ ok: true, filePath: resolved, summary: inspectWorld(world) })
-      } catch (err) {
-        return errorResult(err)
-      }
+      const resolved = resolveSafePath(filePath, workdir)
+      const raw = await readFile(resolved, 'utf8')
+      const world = parseWorld(raw)
+      session.setWorld(world, resolved, { reason: 'load_world' })
+      return jsonResult({ ok: true, filePath: resolved, summary: inspectWorld(world) })
     },
   )
 
@@ -155,17 +198,13 @@ export function createMapMcpServer(options: CreateServerOptions = {}): { server:
       },
     },
     async ({ filePath }) => {
-      try {
-        const world = session.requireWorld()
-        const target = filePath ? resolveSafePath(filePath, workdir) : session.filePath
-        if (!target) throw new Error('Informe `filePath` para salvar um mapa novo.')
-        const json = serializeWorld(world)
-        await writeFileEnsuringDir(target, json)
-        session.setFilePath(target)
-        return jsonResult({ ok: true, filePath: target, bytes: Buffer.byteLength(json, 'utf8') })
-      } catch (err) {
-        return errorResult(err)
-      }
+      const world = session.requireWorld()
+      const target = filePath ? resolveSafePath(filePath, workdir) : session.filePath
+      if (!target) throw new Error('Informe `filePath` para salvar um mapa novo.')
+      const json = serializeWorld(world)
+      await writeFileEnsuringDir(target, json)
+      session.setFilePath(target)
+      return jsonResult({ ok: true, filePath: target, bytes: Buffer.byteLength(json, 'utf8') })
     },
   )
 
@@ -180,19 +219,15 @@ export function createMapMcpServer(options: CreateServerOptions = {}): { server:
       },
     },
     async ({ action }) => {
-      try {
-        const res = action === 'undo' ? session.undo() : session.redo()
-        return jsonResult({
-          ok: true,
-          action,
-          changed: res.changed,
-          status: session.status(),
-          counts: compactWorldCounts(res.world),
-          settings: res.world.settings,
-        })
-      } catch (err) {
-        return errorResult(err)
-      }
+      const res = action === 'undo' ? session.undo() : session.redo()
+      return jsonResult({
+        ok: true,
+        action,
+        changed: res.changed,
+        status: session.status(),
+        counts: compactWorldCounts(res.world),
+        settings: res.world.settings,
+      })
     },
   )
 
@@ -206,12 +241,8 @@ export function createMapMcpServer(options: CreateServerOptions = {}): { server:
       inputSchema: {},
     },
     async () => {
-      try {
-        const world = session.requireWorld()
-        return jsonResult({ status: session.status(), summary: inspectWorld(world) })
-      } catch (err) {
-        return errorResult(err)
-      }
+      const world = session.requireWorld()
+      return jsonResult({ status: session.status(), summary: inspectWorld(world) })
     },
   )
 
@@ -227,12 +258,8 @@ export function createMapMcpServer(options: CreateServerOptions = {}): { server:
       },
     },
     async ({ x, y }) => {
-      try {
-        const world = session.requireWorld()
-        return jsonResult(samplePoint(world, x, y))
-      } catch (err) {
-        return errorResult(err)
-      }
+      const world = session.requireWorld()
+      return jsonResult(samplePoint(world, x, y))
     },
   )
 
@@ -264,30 +291,26 @@ export function createMapMcpServer(options: CreateServerOptions = {}): { server:
       },
     },
     async (args) => {
-      try {
-        const world = session.requireWorld()
-        let biome: Biome | undefined
-        if (args.biome) {
-          const parsed = parseBiome(args.biome)
-          if (parsed === null) throw new Error(`Bioma inválido: "${args.biome}". Válidos: ${BIOME_KEYS.join(', ')}.`)
-          biome = parsed
-        }
-        const result = findLocations(world, {
-          terrain: args.terrain,
-          biome,
-          kingdomId: args.kingdomId,
-          borderOfKingdoms: args.borderOfKingdoms,
-          quadrant: args.quadrant,
-          bounds: args.bounds,
-          minDistanceFromMarkers: args.minDistanceFromMarkers,
-          minSpacing: args.minSpacing,
-          avoidOverlays: args.avoidOverlays,
-          limit: args.limit,
-        })
-        return jsonResult(result)
-      } catch (err) {
-        return errorResult(err)
+      const world = session.requireWorld()
+      let biome: Biome | undefined
+      if (args.biome) {
+        const parsed = parseBiome(args.biome)
+        if (parsed === null) throw new Error(`Bioma inválido: "${args.biome}". Válidos: ${BIOME_KEYS.join(', ')}.`)
+        biome = parsed
       }
+      const result = findLocations(world, {
+        terrain: args.terrain,
+        biome,
+        kingdomId: args.kingdomId,
+        borderOfKingdoms: args.borderOfKingdoms,
+        quadrant: args.quadrant,
+        bounds: args.bounds,
+        minDistanceFromMarkers: args.minDistanceFromMarkers,
+        minSpacing: args.minSpacing,
+        avoidOverlays: args.avoidOverlays,
+        limit: args.limit,
+      })
+      return jsonResult(result)
     },
   )
 
@@ -315,63 +338,58 @@ export function createMapMcpServer(options: CreateServerOptions = {}): { server:
       },
     },
     async (args) => {
-      try {
-        const current = session.requireWorld()
-        const radius = Math.min(radiusMax(current), Math.max(RADIUS_MIN, args.radius ?? radiusDefault(current)))
-        const strength = args.strength ?? 0.6
-        const passes = args.passes ?? 1
+      const current = session.requireWorld()
+      const radius = Math.min(radiusMax(current), Math.max(RADIUS_MIN, args.radius ?? radiusDefault(current)))
+      const strength = args.strength ?? 0.6
+      const passes = args.passes ?? 1
 
-        let biome: Biome = Biome.Forest
-        if (args.tool === 'biome') {
-          if (!args.biome) throw new Error('Informe `biome` quando tool="biome".')
-          const parsed = parseLandBiome(args.biome)
-          if (parsed === null) throw new Error(`Bioma de terra inválido: "${args.biome}". Válidos: ${LAND_BIOME_KEYS.join(', ')}.`)
-          biome = parsed
-        }
-
-        let state = 0
-        if (args.tool === 'kingdom') {
-          if (args.kingdomId === undefined) throw new Error('Informe `kingdomId` quando tool="kingdom" (0 apaga território).')
-          if (args.kingdomId !== 0 && !current.states.some((s) => s.id === args.kingdomId)) {
-            throw new Error(`Reino id=${args.kingdomId} não existe. Use \`manage_kingdoms\` ou \`inspect_world\`.`)
-          }
-          state = args.kingdomId
-        }
-
-        const brush: Brush = { radius, strength, biome, state, marker: 'city' }
-        const strokeLabel =
-          args.tool === 'biome'
-            ? args.biome
-            : args.tool === 'kingdom'
-              ? current.states.find((st) => st.id === state)?.name ?? (state === 0 ? 'apagar reino' : `reino ${state}`)
-              : args.tool
-        let touchedCount = 0
-        const { world, changed } = session.edit(
-          (w) => {
-            const s = startSession(w, args.tool, Boolean(args.shrink))
-            for (let p = 0; p < passes; p++) {
-              s.last = null
-              for (const pt of args.points) strokeTo(s, pt.x, pt.y, brush)
-            }
-            touchedCount = s.touched.size
-            return commitSession(s) ?? w
-          },
-          {
-            reason: 'brush_stroke',
-            highlight: { kind: 'stroke', points: args.points, radius, label: strokeLabel },
-            highlights: [{ kind: 'stroke', points: args.points, radius, label: strokeLabel }],
-          },
-        )
-
-        return jsonResult({
-          ok: true,
-          changed,
-          touchedCells: touchedCount,
-          meta: inspectWorld(world).meta,
-        })
-      } catch (err) {
-        return errorResult(err)
+      let biome: Biome = Biome.Forest
+      if (args.tool === 'biome') {
+        if (!args.biome) throw new Error('Informe `biome` quando tool="biome".')
+        const parsed = parseLandBiome(args.biome)
+        if (parsed === null) throw new Error(`Bioma de terra inválido: "${args.biome}". Válidos: ${LAND_BIOME_KEYS.join(', ')}.`)
+        biome = parsed
       }
+
+      let state = 0
+      if (args.tool === 'kingdom') {
+        if (args.kingdomId === undefined) throw new Error('Informe `kingdomId` quando tool="kingdom" (0 apaga território).')
+        if (args.kingdomId !== 0 && !current.states.some((s) => s.id === args.kingdomId)) {
+          throw new Error(`Reino id=${args.kingdomId} não existe. Use \`manage_kingdoms\` ou \`inspect_world\`.`)
+        }
+        state = args.kingdomId
+      }
+
+      const brush: Brush = { radius, strength, biome, state, marker: 'city' }
+      const strokeLabel =
+        args.tool === 'biome'
+          ? args.biome
+          : args.tool === 'kingdom'
+            ? current.states.find((st) => st.id === state)?.name ?? (state === 0 ? 'apagar reino' : `reino ${state}`)
+            : args.tool
+      let touchedCount = 0
+      const { world, changed } = session.edit(
+        (w) => {
+          const s = startSession(w, args.tool, Boolean(args.shrink))
+          for (let p = 0; p < passes; p++) {
+            s.last = null
+            for (const pt of args.points) strokeTo(s, pt.x, pt.y, brush)
+          }
+          touchedCount = s.touched.size
+          return commitSession(s) ?? w
+        },
+        {
+          reason: 'brush_stroke',
+          highlights: [{ kind: 'stroke', points: args.points, radius, label: strokeLabel }],
+        },
+      )
+
+      return jsonResult({
+        ok: true,
+        changed,
+        touchedCells: touchedCount,
+        meta: inspectWorld(world).meta,
+      })
     },
   )
 
@@ -387,26 +405,19 @@ export function createMapMcpServer(options: CreateServerOptions = {}): { server:
       },
     },
     async ({ count, variant }) => {
-      try {
-        const editMeta: { reason: string; highlight?: LiveHighlight; highlights?: LiveHighlight[] } = { reason: 'regenerate_kingdoms' }
-        const { world } = session.edit((w) => {
-          const next = generateKingdoms(w, count, variant ?? 0)
-          const caps: LiveHighlight[] = next.states
-            .map((st) => {
-              const cap = st.capital !== null ? next.markers.find((m) => m.id === st.capital) : undefined
-              return cap ? ({ kind: 'point', x: cap.x, y: cap.y, label: st.name } as LiveHighlight) : null
-            })
-            .filter((h): h is LiveHighlight => h !== null)
-          if (caps.length) {
-            editMeta.highlights = caps
-            editMeta.highlight = caps[caps.length - 1]
-          }
-          return next
-        }, editMeta)
-        return jsonResult({ ok: true, kingdoms: inspectWorld(world).kingdoms })
-      } catch (err) {
-        return errorResult(err)
-      }
+      const editMeta: { reason: string; highlights?: LiveHighlight[] } = { reason: 'regenerate_kingdoms' }
+      const { world } = session.edit((w) => {
+        const next = generateKingdoms(w, count, variant ?? 0)
+        const caps: LiveHighlight[] = next.states
+          .map((st) => {
+            const cap = st.capital !== null ? next.markers.find((m) => m.id === st.capital) : undefined
+            return cap ? ({ kind: 'point', x: cap.x, y: cap.y, label: st.name } as LiveHighlight) : null
+          })
+          .filter((h): h is LiveHighlight => h !== null)
+        if (caps.length) editMeta.highlights = caps
+        return next
+      }, editMeta)
+      return jsonResult({ ok: true, kingdoms: inspectWorld(world).kingdoms })
     },
   )
 
@@ -456,62 +467,28 @@ export function createMapMcpServer(options: CreateServerOptions = {}): { server:
       },
     },
     async ({ operations }) => {
-      try {
-        const results: { action: string; id: number; ok: boolean; error?: string }[] = []
-        const editMeta: { reason: string; highlight?: LiveHighlight; highlights: LiveHighlight[] } = { reason: 'manage_markers', highlights: [] }
-        const { world, changed } = session.edit((startWorld) => {
-          let w: World = startWorld
-          for (const op of operations) {
-            if (op.action === 'add') {
-              const [added, sel] = addMarker(w, op.kind, op.x, op.y)
-              w = added
-              if (op.name !== undefined || op.notes !== undefined) {
-                w = patchItem(w, sel, { name: op.name, notes: op.notes })
-              }
-              if (op.capitalOfKingdomId !== undefined) {
-                if (!w.states.some((s) => s.id === op.capitalOfKingdomId)) {
-                  results.push({ action: 'add', id: sel.id, ok: false, error: `Reino id=${op.capitalOfKingdomId} não encontrado para vincular capital.` })
-                  continue
-                }
-                w = patchItem(w, { type: 'state', id: op.capitalOfKingdomId }, { capital: sel.id })
-              }
-              const created = w.markers.find((m) => m.id === sel.id)
-              if (created) {
-                const h: LiveHighlight = { kind: 'point', x: created.x, y: created.y, label: created.name }
-                editMeta.highlight = h
-                editMeta.highlights.push(h)
-              }
-              results.push({ action: 'add', id: sel.id, ok: true })
-            } else if (op.action === 'update') {
-              const sel: Sel = { type: 'marker', id: op.id }
-              if (!w.markers.some((m) => m.id === op.id)) {
-                results.push({ action: 'update', id: op.id, ok: false, error: 'Marcador não encontrado.' })
-                continue
-              }
-              w = patchItem(w, sel, { kind: op.kind, x: op.x, y: op.y, name: op.name, notes: op.notes })
-              const updated = w.markers.find((m) => m.id === op.id)
-              if (updated) {
-                const h: LiveHighlight = { kind: 'point', x: updated.x, y: updated.y, label: updated.name }
-                editMeta.highlight = h
-                editMeta.highlights.push(h)
-              }
-              results.push({ action: 'update', id: op.id, ok: true })
-            } else {
-              const sel: Sel = { type: 'marker', id: op.id }
-              if (!w.markers.some((m) => m.id === op.id)) {
-                results.push({ action: 'remove', id: op.id, ok: false, error: 'Marcador não encontrado.' })
-                continue
-              }
-              w = removeItem(w, sel)
-              results.push({ action: 'remove', id: op.id, ok: true })
-            }
+      const { world, changed, results } = runItemBatch(session, operations, {
+        reason: 'manage_markers',
+        type: 'marker',
+        notFound: 'Marcador não encontrado.',
+        list: (w) => w.markers,
+        label: (m) => m.name,
+        add: (w, op) => {
+          if (op.capitalOfKingdomId !== undefined && !w.states.some((s) => s.id === op.capitalOfKingdomId)) {
+            return { error: `Reino id=${op.capitalOfKingdomId} não encontrado para vincular capital.` }
           }
-          return w
-        }, editMeta)
-        return jsonResult({ ok: true, changed, results, totalMarkers: world.markers.length })
-      } catch (err) {
-        return errorResult(err)
-      }
+          let [next, sel] = addMarker(w, op.kind, op.x, op.y)
+          if (op.name !== undefined || op.notes !== undefined) {
+            next = patchItem(next, sel, { name: op.name, notes: op.notes })
+          }
+          if (op.capitalOfKingdomId !== undefined) {
+            next = patchItem(next, { type: 'state', id: op.capitalOfKingdomId }, { capital: sel.id })
+          }
+          return { world: next, id: sel.id }
+        },
+        updatePatch: (op) => ({ kind: op.kind, x: op.x, y: op.y, name: op.name, notes: op.notes }),
+      })
+      return jsonResult({ ok: true, changed, results, totalMarkers: world.markers.length })
     },
   )
 
@@ -553,55 +530,22 @@ export function createMapMcpServer(options: CreateServerOptions = {}): { server:
       },
     },
     async ({ operations }) => {
-      try {
-        const results: { action: string; id: number; ok: boolean; error?: string }[] = []
-        const editMeta: { reason: string; highlight?: LiveHighlight; highlights: LiveHighlight[] } = { reason: 'manage_labels', highlights: [] }
-        const { world, changed } = session.edit((startWorld) => {
-          let w: World = startWorld
-          for (const op of operations) {
-            if (op.action === 'add') {
-              const [added, sel] = addLabel(w, op.x, op.y)
-              w = added
-              if (op.text !== undefined || op.size !== undefined || op.rotation !== undefined) {
-                w = patchItem(w, sel, { text: op.text, size: op.size, rotation: op.rotation })
-              }
-              const created = w.labels.find((l) => l.id === sel.id)
-              if (created) {
-                const h: LiveHighlight = { kind: 'point', x: created.x, y: created.y, label: created.text }
-                editMeta.highlight = h
-                editMeta.highlights.push(h)
-              }
-              results.push({ action: 'add', id: sel.id, ok: true })
-            } else if (op.action === 'update') {
-              const sel: Sel = { type: 'label', id: op.id }
-              if (!w.labels.some((l) => l.id === op.id)) {
-                results.push({ action: 'update', id: op.id, ok: false, error: 'Rótulo não encontrado.' })
-                continue
-              }
-              w = patchItem(w, sel, { x: op.x, y: op.y, text: op.text, size: op.size, rotation: op.rotation })
-              const updated = w.labels.find((l) => l.id === op.id)
-              if (updated) {
-                const h: LiveHighlight = { kind: 'point', x: updated.x, y: updated.y, label: updated.text }
-                editMeta.highlight = h
-                editMeta.highlights.push(h)
-              }
-              results.push({ action: 'update', id: op.id, ok: true })
-            } else {
-              const sel: Sel = { type: 'label', id: op.id }
-              if (!w.labels.some((l) => l.id === op.id)) {
-                results.push({ action: 'remove', id: op.id, ok: false, error: 'Rótulo não encontrado.' })
-                continue
-              }
-              w = removeItem(w, sel)
-              results.push({ action: 'remove', id: op.id, ok: true })
-            }
+      const { world, changed, results } = runItemBatch(session, operations, {
+        reason: 'manage_labels',
+        type: 'label',
+        notFound: 'Rótulo não encontrado.',
+        list: (w) => w.labels,
+        label: (l) => l.text,
+        add: (w, op) => {
+          let [next, sel] = addLabel(w, op.x, op.y)
+          if (op.text !== undefined || op.size !== undefined || op.rotation !== undefined) {
+            next = patchItem(next, sel, { text: op.text, size: op.size, rotation: op.rotation })
           }
-          return w
-        }, editMeta)
-        return jsonResult({ ok: true, changed, results, totalLabels: world.labels.length })
-      } catch (err) {
-        return errorResult(err)
-      }
+          return { world: next, id: sel.id }
+        },
+        updatePatch: (op) => ({ x: op.x, y: op.y, text: op.text, size: op.size, rotation: op.rotation }),
+      })
+      return jsonResult({ ok: true, changed, results, totalLabels: world.labels.length })
     },
   )
 
@@ -630,40 +574,34 @@ export function createMapMcpServer(options: CreateServerOptions = {}): { server:
       },
     },
     async (args) => {
-      try {
-        let targetId = args.id ?? 0
-        const editMeta: { reason: string; highlight?: LiveHighlight; highlights?: LiveHighlight[] } = { reason: 'manage_kingdoms' }
-        const { world, changed } = session.edit((w) => {
-          if (args.capitalId !== undefined && args.capitalId !== null && !w.markers.some((m) => m.id === args.capitalId)) {
-            throw new Error(`Marcador id=${args.capitalId} não encontrado para definir como capital.`)
-          }
-          let next: World
-          if (args.action === 'add') {
-            const [added, sel] = addState(w)
-            targetId = sel.id
-            next =
-              args.name || args.color || args.capitalId !== undefined
-                ? patchItem(added, sel, { name: args.name, color: args.color, capital: args.capitalId })
-                : added
-          } else {
-            if (!args.id) throw new Error('Informe `id` quando action="update".')
-            if (!w.states.some((s) => s.id === args.id)) throw new Error(`Reino id=${args.id} não encontrado.`)
-            next = patchItem(w, { type: 'state', id: args.id }, { name: args.name, color: args.color, capital: args.capitalId })
-          }
-          const st = next.states.find((s) => s.id === targetId)
-          const cap = st?.capital != null ? next.markers.find((m) => m.id === st.capital) : undefined
-          if (st && cap) {
-            const h: LiveHighlight = { kind: 'point', x: cap.x, y: cap.y, label: st.name }
-            editMeta.highlight = h
-            editMeta.highlights = [h]
-          }
-          return next
-        }, editMeta)
-        const state = world.states.find((s) => s.id === targetId)
-        return jsonResult({ ok: true, changed, kingdom: state ?? null })
-      } catch (err) {
-        return errorResult(err)
-      }
+      let targetId = args.id ?? 0
+      const editMeta: { reason: string; highlights?: LiveHighlight[] } = { reason: 'manage_kingdoms' }
+      const { world, changed } = session.edit((w) => {
+        if (args.capitalId !== undefined && args.capitalId !== null && !w.markers.some((m) => m.id === args.capitalId)) {
+          throw new Error(`Marcador id=${args.capitalId} não encontrado para definir como capital.`)
+        }
+        let next: World
+        if (args.action === 'add') {
+          const [added, sel] = addState(w)
+          targetId = sel.id
+          next =
+            args.name || args.color || args.capitalId !== undefined
+              ? patchItem(added, sel, { name: args.name, color: args.color, capital: args.capitalId })
+              : added
+        } else {
+          if (!args.id) throw new Error('Informe `id` quando action="update".')
+          if (!w.states.some((s) => s.id === args.id)) throw new Error(`Reino id=${args.id} não encontrado.`)
+          next = patchItem(w, { type: 'state', id: args.id }, { name: args.name, color: args.color, capital: args.capitalId })
+        }
+        const st = next.states.find((s) => s.id === targetId)
+        const cap = st?.capital != null ? next.markers.find((m) => m.id === st.capital) : undefined
+        if (st && cap) {
+          editMeta.highlights = [{ kind: 'point', x: cap.x, y: cap.y, label: st.name }]
+        }
+        return next
+      }, editMeta)
+      const state = world.states.find((s) => s.id === targetId)
+      return jsonResult({ ok: true, changed, kingdom: state ?? null })
     },
   )
 
@@ -674,21 +612,17 @@ export function createMapMcpServer(options: CreateServerOptions = {}): { server:
       title: 'Atualizar configurações do mapa',
       description: 'Altera título na moldura, tipo e tamanho da grade (hex/square), escala em km/unidade e posição da bússola e barra de escala.',
       inputSchema: {
-        title: z.string().max(80).optional(),
+        title: z.string().max(SETTINGS_LIMITS.title).optional(),
         gridType: z.enum(GRID_TYPES).optional(),
-        gridKm: z.number().min(0.1).max(10000).optional(),
-        kmPerUnit: z.number().min(0.01).max(1000).optional(),
+        gridKm: z.number().min(SETTINGS_LIMITS.gridKm[0]).max(SETTINGS_LIMITS.gridKm[1]).optional(),
+        kmPerUnit: z.number().min(SETTINGS_LIMITS.kmPerUnit[0]).max(SETTINGS_LIMITS.kmPerUnit[1]).optional(),
         scaleCorner: z.enum(CORNERS).optional(),
         compassCorner: z.enum(CORNERS).optional(),
       },
     },
     async (args) => {
-      try {
-        const { world, changed } = session.edit((w) => patchSettings(w, args), { reason: 'update_settings' })
-        return jsonResult({ ok: true, changed, settings: world.settings })
-      } catch (err) {
-        return errorResult(err)
-      }
+      const { world, changed } = session.edit((w) => patchSettings(w, args), { reason: 'update_settings' })
+      return jsonResult({ ok: true, changed, settings: world.settings })
     },
   )
 
@@ -709,63 +643,59 @@ export function createMapMcpServer(options: CreateServerOptions = {}): { server:
       },
     },
     async (args) => {
-      try {
-        const world = session.requireWorld()
-        const layers = args.layers as Partial<Layers> | undefined
-        const returnImage = args.returnImage ?? true
-        let savedPath: string | null = null
-        let savedFormat: 'svg' | 'png' | null = null
-        let pngResult: { png: Buffer; width: number; height: number } | null = null
+      const world = session.requireWorld()
+      const layers = args.layers as Partial<Layers> | undefined
+      const returnImage = args.returnImage ?? true
+      let savedPath: string | null = null
+      let savedFormat: 'svg' | 'png' | null = null
+      let pngResult: { png: Buffer; width: number; height: number } | null = null
 
-        if (args.outputPath) {
-          savedPath = resolveSafePath(args.outputPath, workdir)
-          if (savedPath.toLowerCase().endsWith('.svg')) {
-            const svg = renderWorldSvg(world, { layers, maxWidth: args.maxWidth })
-            await writeFileEnsuringDir(savedPath, svg)
-            savedFormat = 'svg'
-          } else {
-            pngResult = renderWorldPng(world, { layers, maxWidth: args.maxWidth })
-            await writeFileEnsuringDir(savedPath, pngResult.png)
-            savedFormat = 'png'
-          }
-        }
-
-        if (returnImage && !pngResult) {
+      if (args.outputPath) {
+        savedPath = resolveSafePath(args.outputPath, workdir)
+        if (savedPath.toLowerCase().endsWith('.svg')) {
+          const svg = renderWorldSvg(world, { layers, maxWidth: args.maxWidth })
+          await writeFileEnsuringDir(savedPath, svg)
+          savedFormat = 'svg'
+        } else {
           pngResult = renderWorldPng(world, { layers, maxWidth: args.maxWidth })
+          await writeFileEnsuringDir(savedPath, pngResult.png)
+          savedFormat = 'png'
         }
-
-        const content: (
-          | { type: 'text'; text: string }
-          | { type: 'image'; data: string; mimeType: string }
-        )[] = [
-          {
-            type: 'text',
-            text: JSON.stringify(
-              {
-                ok: true,
-                width: pngResult?.width ?? world.width,
-                height: pngResult?.height ?? world.height,
-                savedPath,
-                savedFormat,
-              },
-              null,
-              2,
-            ),
-          },
-        ]
-
-        if (returnImage && pngResult) {
-          content.push({
-            type: 'image',
-            data: pngResult.png.toString('base64'),
-            mimeType: 'image/png',
-          })
-        }
-
-        return { content }
-      } catch (err) {
-        return errorResult(err)
       }
+
+      if (returnImage && !pngResult) {
+        pngResult = renderWorldPng(world, { layers, maxWidth: args.maxWidth })
+      }
+
+      const content: (
+        | { type: 'text'; text: string }
+        | { type: 'image'; data: string; mimeType: string }
+      )[] = [
+        {
+          type: 'text',
+          text: JSON.stringify(
+            {
+              ok: true,
+              width: pngResult?.width ?? world.width,
+              height: pngResult?.height ?? world.height,
+              savedPath,
+              savedFormat,
+            },
+            null,
+            2,
+          ),
+        },
+      ]
+
+      if (returnImage && pngResult) {
+        content.push({
+          type: 'image',
+          data: pngResult.png.toString('base64'),
+          mimeType: 'image/png',
+        })
+      }
+
+      return { content }
     },
   )
 
@@ -784,23 +714,19 @@ export function createMapMcpServer(options: CreateServerOptions = {}): { server:
       },
     },
     async ({ action, port, appUrl }) => {
-      try {
-        if (action === 'start') {
-          const status = await liveBridge.start({
-            port,
-            appUrl,
-            token: process.env.MAP_MCP_LIVE_TOKEN,
-          })
-          return jsonResult({ ok: true, ...status })
-        }
-        if (action === 'stop') {
-          await liveBridge.stop()
-          return jsonResult({ ok: true, ...liveBridge.status() })
-        }
-        return jsonResult({ ok: true, ...liveBridge.status() })
-      } catch (err) {
-        return errorResult(err)
+      if (action === 'start') {
+        const status = await liveBridge.start({
+          port,
+          appUrl,
+          token: process.env.MAP_MCP_LIVE_TOKEN,
+        })
+        return jsonResult({ ok: true, ...status })
       }
+      if (action === 'stop') {
+        await liveBridge.stop()
+        return jsonResult({ ok: true, ...liveBridge.status() })
+      }
+      return jsonResult({ ok: true, ...liveBridge.status() })
     },
   )
 

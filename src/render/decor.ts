@@ -3,7 +3,7 @@
 // at any zoom; and changing a setting or toggling a layer never rebuilds the map.
 import { gridCellUnits, gridSegments } from '../core/grid'
 import { scaleBarSpec } from '../core/scale'
-import type { Corner } from '../core/settings'
+import { COMPASS_LABEL, COMPASS_R, OVERLAY_MARGIN, SCALE_MAX_FRAC, STACK_GAP, type Corner } from '../core/settings'
 import type { World } from '../core/world'
 import { MAP_FONT } from './fonts'
 import { INK, PAPER } from './palette'
@@ -19,12 +19,6 @@ const GRID_ALPHA = 0.35
 const MIN_GRID_PX = 5 // cells smaller than this on screen would only draw a gray blur
 const BACKDROP_ALPHA = 0.8 // paper behind the scale bar and compass, so they read over forests and hatching
 const MOUNT_TINT = 'rgba(110, 70, 30, 0.10)' // frame margin, a touch darker than the map, like a mount
-// Sizes below are in "units": a thousandth of the map's shorter side, so decorations scale with the map.
-const MARGIN = 30 // from the map edge to the scale bar / compass
-const SCALE_MAX_FRAC = 0.18 // the scale bar is at most this share of the map width
-const COMPASS_R = 42
-const COMPASS_LABEL = 24 // room above the compass for the "N"
-const STACK_GAP = 60 // shift of the compass when it shares a corner with the scale bar
 
 export function drawAnnotations(ctx: CanvasRenderingContext2D, w: World, o: DecorState): void {
   if (o.layers.grid) drawGrid(ctx, w)
@@ -75,7 +69,7 @@ function drawScaleBar(ctx: CanvasRenderingContext2D, w: World, k: number, textRe
   const barH = 6 * k
   const font = 16 * k
   const head = font * 1.4 // room for the label above the bar
-  const [x, y0] = anchor(w.settings.scaleCorner, w.width, w.height, units, barH + head, MARGIN * k)
+  const [x, y0] = anchor(w.settings.scaleCorner, w.width, w.height, units, barH + head, OVERLAY_MARGIN * k)
   const y = y0 + head
   ctx.save()
   ctx.globalAlpha = BACKDROP_ALPHA
@@ -102,7 +96,7 @@ function drawScaleBar(ctx: CanvasRenderingContext2D, w: World, k: number, textRe
 function drawCompass(ctx: CanvasRenderingContext2D, w: World, k: number, textReady: boolean, besideScale: boolean) {
   const r = COMPASS_R * k
   const box = 2 * r + COMPASS_LABEL * k
-  let [x, y] = anchor(w.settings.compassCorner, w.width, w.height, box, box, MARGIN * k)
+  let [x, y] = anchor(w.settings.compassCorner, w.width, w.height, box, box, OVERLAY_MARGIN * k)
   // Sharing a corner with the scale bar: sit just inside it, towards the middle of the map.
   if (besideScale) y += (w.settings.compassCorner[0] === 't' ? 1 : -1) * STACK_GAP * k
   const cx = x + box / 2

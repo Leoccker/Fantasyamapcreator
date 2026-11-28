@@ -6,6 +6,7 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 import { afterEach, describe, expect, it } from 'vitest'
 import { parseWorld } from '../core/world'
 import { createMapMcpServer } from './server'
+import { resolveSafePath } from './session'
 
 function parseTextContent(result: Awaited<ReturnType<Client['callTool']>>) {
   const content = result.content as { type: string; text?: string }[]
@@ -257,5 +258,32 @@ describe('MCP server end-to-end', () => {
     const liveStopped = parseTextContent(await client.callTool({ name: 'live_preview', arguments: { action: 'stop' } }))
     expect(liveStopped.running).toBe(false)
     expect(liveBridge.running).toBe(false)
+  })
+
+  it('expands leading ~ in resolveSafePath while preserving workdir jail checks', () => {
+    expect(resolveSafePath('~/Documents/mapa.json')).toBe(path.join(os.homedir(), 'Documents', 'mapa.json'))
+    expect(resolveSafePath('~')).toBe(os.homedir())
+    expect(resolveSafePath('~literal/mapa.json')).toBe(path.resolve('~literal/mapa.json'))
+    expect(resolveSafePath('~/Documents/mapa.json', os.homedir())).toBe(path.join(os.homedir(), 'Documents', 'mapa.json'))
+    expect(() => resolveSafePath('~/Documents/mapa.json', path.join(os.tmpdir(), 'fmc-jail'))).toThrow(/fora do diretório permitido/)
+  })
+
+  it('does not add a marker when capitalOfKingdomId does not exist', async () => {
+    const { client, session } = await setupClient()
+    await client.callTool({ name: 'generate_world', arguments: { seed: 'marker-check', size: 'small', kingdoms: 1 } })
+    const beforeCount = session.world!.markers.length
+
+    const res = parseTextContent(
+      await client.callTool({
+        name: 'manage_markers',
+        arguments: {
+          operations: [{ action: 'add', kind: 'city', x: 300, y: 200, name: 'Fantasma', capitalOfKingdomId: 999 }],
+        },
+      }),
+    )
+    expect(res.changed).toBe(false)
+    expect(res.results).toEqual([{ action: 'add', ok: false, error: expect.stringContaining('999') }])
+    expect(session.world!.markers.length).toBe(beforeCount)
+    expect(session.world!.markers.some((m) => m.name === 'Fantasma')).toBe(false)
   })
 })

@@ -18,6 +18,8 @@ async function main() {
       })
       console.error(`[fantasy-map-creator-mcp] live-preview ativo em ${status.url}`)
       console.error(`[fantasy-map-creator-mcp] abra no navegador: ${status.connectUrl}`)
+    } else {
+      console.error(`[fantasy-map-creator-mcp] MAP_MCP_LIVE_PORT inválido ("${envPort}"); esperado inteiro entre 0 e 65535.`)
     }
   }
 

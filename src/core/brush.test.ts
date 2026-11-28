@@ -126,6 +126,10 @@ describe('pincel de bioma', () => {
   it('pintura salva e carrega igual (formato v3)', () => {
     expect(parseWorld(serializeWorld(painted))).toEqual(painted)
   })
+
+  it('repintar o mesmo bioma sobre células já pintadas não conta como edição', () => {
+    expect(commitSession(stroke(painted, 'biome', [at(inland)]))).toBeNull()
+  })
 })
 
 describe('histórico', () => {

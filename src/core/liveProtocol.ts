@@ -14,7 +14,6 @@ export interface LiveWorldEvent {
   reason: string
   replaced: boolean
   worldJson: string | null
-  highlight?: LiveHighlight
   highlights?: LiveHighlight[]
 }
 
