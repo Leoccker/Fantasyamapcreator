@@ -34,7 +34,7 @@ export function MapCanvas({ layers, livePulse, ...interaction }: Props) {
     // Created once; world/layers are pushed by the effects below.
   }, [])
 
-  const { zoom } = useMapInteraction(canvasRef, rendererRef, { ...interaction, pad: framePad(world, layers.frame) })
+  const { zoom } = useMapInteraction(canvasRef, rendererRef, { ...interaction, layers, pad: framePad(world, layers.frame) })
 
   useEffect(() => {
     if (livePulse?.highlights.length) liveOverlayRef.current?.pulse(livePulse.highlights)

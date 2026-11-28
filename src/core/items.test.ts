@@ -70,6 +70,18 @@ describe('itens', () => {
     expect(hitTest(b, 400, 250 + 60, 0)).toEqual(sel) // along the rotated text
     expect(hitTest(b, 400 + 60, 250, 0)).not.toEqual(sel) // beside it
   })
+
+  it('clique ignora marcadores e rótulos de camadas escondidas', () => {
+    const m = w.markers[0]
+    expect(hitTest(w, m.x + 1, m.y, 0, { markers: false, labels: true })).not.toEqual({ type: 'marker', id: m.id })
+    const [a, sel] = addLabel(w, 400, 250)
+    expect(hitTest(a, 400, 250, 0, { markers: true, labels: false })).not.toEqual(sel)
+  })
+
+  it('cor do reino é salva em minúsculas (parseWorld só aceita assim)', () => {
+    const s = w.states[0]
+    expect(patchItem(w, { type: 'state', id: s.id }, { color: '#B5523B' }).states[0].color).toBe('#b5523b')
+  })
 })
 
 describe('ícones de marcador', () => {

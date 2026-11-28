@@ -270,8 +270,8 @@ function parsePlaces(o: Record<string, unknown>, version: number, n: number, wid
     const id = int(r.id, `${name}.id`, 1, 65535)
     if (stateIds.has(id)) throw new WorldParseError(`${name}: id ${id} repetido.`)
     stateIds.add(id)
-    const color = r.color
-    if (typeof color !== 'string' || !/^#[0-9a-f]{6}$/.test(color)) throw new WorldParseError(`${name}.color deve ser #rrggbb.`)
+    if (typeof r.color !== 'string' || !/^#[0-9a-f]{6}$/i.test(r.color)) throw new WorldParseError(`${name}.color deve ser #rrggbb.`)
+    const color = r.color.toLowerCase() // files saved by older MCP builds may have uppercase hex
     const capital = r.capital === null ? null : int(r.capital, `${name}.capital`, 1, 1e9)
     if (capital !== null && !markerIds.has(capital)) throw new WorldParseError(`${name}.capital aponta para um marcador que não existe.`)
     return { id, name: str(r.name, `${name}.name`, TEXT_LIMITS.name), color, capital, ...auto(r, name) }

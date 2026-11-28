@@ -17,9 +17,11 @@ function load(src: string): HTMLImageElement {
   return img
 }
 
-/** The decoded image, or null while it loads (or if it is broken / running headless without DOM). */
+/** The decoded image, or null while it loads (or if it is broken). Headless, a stand-in with only `src`. */
 export function iconImage(src: string | undefined): HTMLImageElement | null {
-  if (!src || typeof Image === 'undefined') return null
+  if (!src) return null
+  // Node (MCP render): no decoding, but the only context there is SvgContext, which just embeds img.src.
+  if (typeof Image === 'undefined') return { src } as HTMLImageElement
   const img = load(src)
   return img.complete && img.naturalWidth ? img : null
 }

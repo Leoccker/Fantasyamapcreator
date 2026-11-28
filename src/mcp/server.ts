@@ -1,5 +1,6 @@
 // MCP server definition: registers all map creation, spatial query, editing, and rendering tools.
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { randomUUID } from 'node:crypto'
 import path from 'node:path'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { z } from 'zod'
@@ -51,7 +52,7 @@ function jsonResult(data: unknown) {
 
 async function writeFileEnsuringDir(filePath: string, data: string | Buffer): Promise<void> {
   await mkdir(path.dirname(filePath), { recursive: true })
-  const tmpPath = `${filePath}.tmp`
+  const tmpPath = `${filePath}.${process.pid}.${randomUUID()}.tmp` // concurrent saves to one path must not share a temp file
   await writeFile(tmpPath, data)
   await rename(tmpPath, filePath)
 }

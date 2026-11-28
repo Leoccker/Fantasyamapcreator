@@ -136,6 +136,12 @@ describe('formato v4 (reinos, marcadores, rótulos)', () => {
     expect(() => parseWorld(JSON.stringify(o))).toThrow(WorldParseError)
   })
 
+  it('cor de reino em maiúsculas (arquivos de versões antigas do MCP) abre em minúsculas', () => {
+    const o = JSON.parse(serializeWorld(k))
+    o.states[0].color = '#B5523B'
+    expect(parseWorld(JSON.stringify(o)).states[0].color).toBe('#b5523b')
+  })
+
   it('célula de água com reino no arquivo é limpa ao abrir', () => {
     const o = JSON.parse(serializeWorld(k))
     const water = o.biome.findIndex((b: number) => b === 0)

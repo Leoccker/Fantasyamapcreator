@@ -116,6 +116,7 @@ function normalize(w: World, p: Patch): Patch {
   if (p.name !== undefined) n.name = p.name.slice(0, TEXT_LIMITS.name)
   if (p.notes !== undefined) n.notes = p.notes.slice(0, TEXT_LIMITS.notes)
   if (p.text !== undefined) n.text = p.text.slice(0, TEXT_LIMITS.label)
+  if (p.color !== undefined) n.color = p.color.toLowerCase() // parseWorld only accepts lowercase
   return n
 }
 
@@ -166,12 +167,12 @@ export function removeItem(w: World, sel: Sel): World {
  * What is under (x, y): markers first (top-most), then labels (rotated box; width estimated from the text,
  * no canvas needed), then the kingdom of the cell. `slop` widens the hit area, in map units.
  */
-export function hitTest(w: World, x: number, y: number, slop: number): Sel | null {
-  for (let k = w.markers.length - 1; k >= 0; k--) {
+export function hitTest(w: World, x: number, y: number, slop: number, shown = { markers: true, labels: true }): Sel | null {
+  for (let k = shown.markers ? w.markers.length - 1 : -1; k >= 0; k--) {
     const m = w.markers[k]
     if (Math.hypot(m.x - x, m.y - y) <= MARKER_SIZE * 0.7 + slop) return { type: 'marker', id: m.id }
   }
-  for (let k = w.labels.length - 1; k >= 0; k--) {
+  for (let k = shown.labels ? w.labels.length - 1 : -1; k >= 0; k--) {
     const l = w.labels[k]
     const a = (-l.rotation * Math.PI) / 180
     const dx = x - l.x

@@ -3,6 +3,7 @@ import type { Brush } from '../core/brush'
 import { removeItem, type Sel } from '../core/items'
 import type { World } from '../core/world'
 import { createBrushOverlay } from '../render/brushOverlay'
+import type { Layers } from '../render/draw'
 import type { Renderer } from '../render/renderer'
 import { centerOn, HOME, screenToWorld, transform, zoomAt, type View } from '../render/view'
 import { placeItem } from './gestures/place'
@@ -25,6 +26,7 @@ export interface MapInteractionOptions {
   selection: Sel | null
   onSelect(s: Sel | null): void
   focus: Focus | null
+  layers: Layers
   /** Frame margin around the map, in map units (see view.framePad). */
   pad: number
 }
@@ -114,6 +116,7 @@ export function useMapInteraction(canvasRef: RefObject<HTMLCanvasElement | null>
     const env: GestureEnv = {
       world: () => live.current.world,
       brush: () => live.current.brush,
+      layers: () => live.current.layers,
       renderer: () => rendererRef.current,
       commit: (w, msg) => live.current.onCommit(w, msg),
       select: (s) => live.current.onSelect(s),

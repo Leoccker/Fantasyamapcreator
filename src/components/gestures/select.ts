@@ -10,7 +10,7 @@ const DRAG_PX = 3 // a click that moves less than this is not a drag
  */
 export function startSelect(env: GestureEnv, x: number, y: number): Gesture | null {
   const base = env.world()
-  const hit = hitTest(base, x, y, HIT_PX * env.worldPerPx())
+  const hit = hitTest(base, x, y, HIT_PX * env.worldPerPx(), env.layers())
   env.select(hit)
   if (!hit || hit.type === 'state') return null
 

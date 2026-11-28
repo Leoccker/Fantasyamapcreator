@@ -14,7 +14,7 @@ describe('renderHeadless', () => {
     { title: 'Reino de Eldoria' },
   )
 
-  it('renders a standalone SVG with map layers, title, and custom-icon fallback', () => {
+  it('renders a standalone SVG with map layers, title, and the uploaded custom icon', () => {
     const withIcon = addIcon(base, 'Brasão', TINY_PNG)!
     const [world] = addMarker(withIcon[0], 'castle', 500, 300, withIcon[1])
 
@@ -24,6 +24,7 @@ describe('renderHeadless', () => {
     expect(svg).toContain('</svg>')
     expect(svg).toContain('Reino de Eldoria')
     expect(svg).toContain('mcpLandClip')
+    expect(svg).toContain(`xlink:href="${TINY_PNG}"`) // the uploaded icon, not the kind's fallback
   })
 
   it('rasterizes a valid PNG buffer at requested maxWidth', () => {
