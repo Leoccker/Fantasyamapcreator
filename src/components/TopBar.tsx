@@ -1,5 +1,7 @@
 import { AutosaveInfo, FileActions, type AutosaveProps, type FileActionsProps } from './FileActions'
+import { LiveSyncControl } from './LiveSyncControl'
 import { StatusMessage, type Status } from './StatusMessage'
+import type { LiveSyncController } from './useLiveSync'
 
 type Props = FileActionsProps &
   AutosaveProps & {
@@ -8,6 +10,8 @@ type Props = FileActionsProps &
     onUndo(): void
     onRedo(): void
     status: Status
+    live: LiveSyncController
+    onPushLive(): void
   }
 
 const SHORTCUTS = [
@@ -21,7 +25,7 @@ const SHORTCUTS = [
 ]
 
 /** Always visible: files, undo/redo, the status line (the app's live region: keep it mounted) and the help menus. */
-export function TopBar({ onExportPng, onExportSvg, onExportJson, onImport, autosave, onClearSaved, canUndo, canRedo, onUndo, onRedo, status }: Props) {
+export function TopBar({ onExportPng, onExportSvg, onExportJson, onImport, autosave, onClearSaved, canUndo, canRedo, onUndo, onRedo, status, live, onPushLive }: Props) {
   return (
     <header className="topbar">
       <h1>Criador de Mapas</h1>
@@ -35,6 +39,7 @@ export function TopBar({ onExportPng, onExportSvg, onExportJson, onImport, autos
         </button>
       </div>
       <StatusMessage status={status} />
+      <LiveSyncControl live={live} onPushCurrent={onPushLive} />
       <AutosaveInfo autosave={autosave} onClearSaved={onClearSaved} />
       <details className="pop">
         <summary aria-label="Atalhos do teclado" title="Atalhos do teclado">

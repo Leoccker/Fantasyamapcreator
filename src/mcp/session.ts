@@ -1,6 +1,7 @@
-// In-memory editing session for the MCP server: active World, undo/redo history, and safe path resolution.
+// In-memory editing session for the MCP server: active World, undo/redo history, revision tracking, and safe path resolution.
 import path from 'node:path'
 import { createHistory, type History } from '../core/history'
+import { reuseUnchangedWorldData, type LiveHighlight } from '../core/liveProtocol'
 import type { World } from '../core/world'
 
 export interface SessionStatus {
@@ -10,10 +11,31 @@ export interface SessionStatus {
   canRedo: boolean
 }
 
+export interface SessionEditMeta {
+  reason?: string
+  source?: 'mcp' | 'browser'
+  clientId?: string
+  highlight?: LiveHighlight
+  highlights?: LiveHighlight[]
+}
+
+export interface SessionChangeEvent {
+  rev: number
+  world: World
+  source: 'mcp' | 'browser'
+  clientId?: string
+  reason: string
+  replaced: boolean
+  highlight?: LiveHighlight
+  highlights?: LiveHighlight[]
+}
+
 export class MapSession {
   private current: World | null = null
   private path: string | null = null
   private history: History<World>
+  private revision = 0
+  private listeners = new Set<(event: SessionChangeEvent) => void>()
 
   constructor(historyLimit = 50) {
     this.history = createHistory<World>(historyLimit)
@@ -27,6 +49,32 @@ export class MapSession {
     return this.path
   }
 
+  get rev(): number {
+    return this.revision
+  }
+
+  onChange(listener: (event: SessionChangeEvent) => void): () => void {
+    this.listeners.add(listener)
+    return () => {
+      this.listeners.delete(listener)
+    }
+  }
+
+  private emit(world: World, replaced: boolean, meta: SessionEditMeta = {}): void {
+    this.revision++
+    const event: SessionChangeEvent = {
+      rev: this.revision,
+      world,
+      source: meta.source ?? 'mcp',
+      clientId: meta.clientId,
+      reason: meta.reason ?? (replaced ? 'replace' : 'edit'),
+      replaced,
+      highlight: meta.highlight,
+      highlights: meta.highlights,
+    }
+    for (const listener of this.listeners) listener(event)
+  }
+
   requireWorld(): World {
     if (!this.current) {
       throw new Error('Nenhum mapa ativo na sessão. Use `generate_world` para criar um mapa ou `load_world` para carregar um arquivo JSON.')
@@ -34,38 +82,60 @@ export class MapSession {
     return this.current
   }
 
-  setWorld(world: World, filePath: string | null = null): void {
+  setWorld(world: World, filePath: string | null = null, meta?: SessionEditMeta): void {
     this.current = world
     this.path = filePath
     this.history.clear()
+    this.emit(world, true, meta)
   }
 
   setFilePath(filePath: string): void {
     this.path = filePath
   }
 
-  edit(fn: (world: World) => World): { world: World; changed: boolean } {
+  edit(fn: (world: World) => World, meta?: SessionEditMeta): { world: World; changed: boolean } {
     const prev = this.requireWorld()
     const next = fn(prev)
     if (next === prev) return { world: prev, changed: false }
     this.history.push(prev)
     this.current = next
+    this.emit(next, false, meta)
     return { world: next, changed: true }
   }
 
-  undo(): { world: World; changed: boolean } {
+  /**
+   * Applies an external World update (e.g. from the live-preview browser editor).
+   * Preserves undo history when editing the same map topology; replaces history when the map itself changed.
+   */
+  applyExternal(world: World, meta: SessionEditMeta = {}): { world: World; rev: number; replaced: boolean } {
+    const prev = this.current
+    const merged = reuseUnchangedWorldData(prev, world)
+    const replaced = !prev || merged.points !== prev.points
+    if (replaced) {
+      this.history.clear()
+    } else if (prev) {
+      this.history.push(prev)
+    }
+    this.current = merged
+    this.emit(merged, replaced, { source: 'browser', reason: 'browser_edit', ...meta })
+    return { world: merged, rev: this.revision, replaced }
+  }
+
+  undo(meta?: SessionEditMeta): { world: World; changed: boolean } {
     const prev = this.requireWorld()
     const restored = this.history.undo(prev)
     if (!restored) return { world: prev, changed: false }
     this.current = restored
+    this.emit(restored, false, { reason: 'undo', ...meta })
     return { world: restored, changed: true }
   }
 
-  redo(): { world: World; changed: boolean } {
+  redo(meta?: SessionEditMeta): { world: World; changed: boolean } {
     const prev = this.requireWorld()
     const restored = this.history.redo(prev)
     if (!restored) return { world: prev, changed: false }
     this.current = restored
+    this.emit(restored, false, { reason: 'redo', ...meta })
     return { world: restored, changed: true }
   }
 

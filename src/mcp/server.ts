@@ -9,10 +9,12 @@ import { DEFAULTS, generate } from '../core/generate'
 import { MARKER_KINDS, type MarkerKind } from '../core/icons'
 import { addLabel, addMarker, addState, patchItem, removeItem, type Sel } from '../core/items'
 import { generateKingdoms } from '../core/kingdoms'
+import type { LiveHighlight } from '../core/liveProtocol'
 import { RADIUS_MIN, radiusDefault, radiusMax, SIZES, sizeById } from '../core/mapSize'
 import { CORNERS, GRID_TYPES, patchSettings } from '../core/settings'
 import { LIMITS, parseWorld, serializeWorld, TEXT_LIMITS, type World } from '../core/world'
 import { DEFAULT_LAYERS, LAYERS, type LayerId, type Layers } from '../render/draw'
+import { LiveBridge } from './liveBridge'
 import { renderWorldPng, renderWorldSvg } from './renderHeadless'
 import { MapSession, resolveSafePath } from './session'
 import {
@@ -30,6 +32,7 @@ import {
 
 export interface CreateServerOptions {
   session?: MapSession
+  liveBridge?: LiveBridge
   /** Optional directory jail for load/save/export paths (defaults to process.env.MAP_MCP_WORKDIR). */
   workdir?: string
 }
@@ -59,8 +62,9 @@ async function writeFileEnsuringDir(filePath: string, data: string | Buffer): Pr
   await writeFile(filePath, data)
 }
 
-export function createMapMcpServer(options: CreateServerOptions = {}): { server: McpServer; session: MapSession } {
+export function createMapMcpServer(options: CreateServerOptions = {}): { server: McpServer; session: MapSession; liveBridge: LiveBridge } {
   const session = options.session ?? new MapSession()
+  const liveBridge = options.liveBridge ?? new LiveBridge(session)
   const workdir = options.workdir ?? process.env.MAP_MCP_WORKDIR
 
   const server = new McpServer({
@@ -109,7 +113,7 @@ export function createMapMcpServer(options: CreateServerOptions = {}): { server:
           biomes,
         })
         if (args.title) world = patchSettings(world, { title: args.title })
-        session.setWorld(world, null)
+        session.setWorld(world, null, { reason: 'generate_world' })
         return jsonResult({ ok: true, summary: inspectWorld(world) })
       } catch (err) {
         return errorResult(err)
@@ -132,7 +136,7 @@ export function createMapMcpServer(options: CreateServerOptions = {}): { server:
         const resolved = resolveSafePath(filePath, workdir)
         const raw = await readFile(resolved, 'utf8')
         const world = parseWorld(raw)
-        session.setWorld(world, resolved)
+        session.setWorld(world, resolved, { reason: 'load_world' })
         return jsonResult({ ok: true, filePath: resolved, summary: inspectWorld(world) })
       } catch (err) {
         return errorResult(err)
@@ -335,16 +339,29 @@ export function createMapMcpServer(options: CreateServerOptions = {}): { server:
         }
 
         const brush: Brush = { radius, strength, biome, state, marker: 'city' }
+        const strokeLabel =
+          args.tool === 'biome'
+            ? args.biome
+            : args.tool === 'kingdom'
+              ? current.states.find((st) => st.id === state)?.name ?? (state === 0 ? 'apagar reino' : `reino ${state}`)
+              : args.tool
         let touchedCount = 0
-        const { world, changed } = session.edit((w) => {
-          const s = startSession(w, args.tool, Boolean(args.shrink))
-          for (let p = 0; p < passes; p++) {
-            s.last = null
-            for (const pt of args.points) strokeTo(s, pt.x, pt.y, brush)
-          }
-          touchedCount = s.touched.size
-          return commitSession(s) ?? w
-        })
+        const { world, changed } = session.edit(
+          (w) => {
+            const s = startSession(w, args.tool, Boolean(args.shrink))
+            for (let p = 0; p < passes; p++) {
+              s.last = null
+              for (const pt of args.points) strokeTo(s, pt.x, pt.y, brush)
+            }
+            touchedCount = s.touched.size
+            return commitSession(s) ?? w
+          },
+          {
+            reason: 'brush_stroke',
+            highlight: { kind: 'stroke', points: args.points, radius, label: strokeLabel },
+            highlights: [{ kind: 'stroke', points: args.points, radius, label: strokeLabel }],
+          },
+        )
 
         return jsonResult({
           ok: true,
@@ -371,7 +388,21 @@ export function createMapMcpServer(options: CreateServerOptions = {}): { server:
     },
     async ({ count, variant }) => {
       try {
-        const { world } = session.edit((w) => generateKingdoms(w, count, variant ?? 0))
+        const editMeta: { reason: string; highlight?: LiveHighlight; highlights?: LiveHighlight[] } = { reason: 'regenerate_kingdoms' }
+        const { world } = session.edit((w) => {
+          const next = generateKingdoms(w, count, variant ?? 0)
+          const caps: LiveHighlight[] = next.states
+            .map((st) => {
+              const cap = st.capital !== null ? next.markers.find((m) => m.id === st.capital) : undefined
+              return cap ? ({ kind: 'point', x: cap.x, y: cap.y, label: st.name } as LiveHighlight) : null
+            })
+            .filter((h): h is LiveHighlight => h !== null)
+          if (caps.length) {
+            editMeta.highlights = caps
+            editMeta.highlight = caps[caps.length - 1]
+          }
+          return next
+        }, editMeta)
         return jsonResult({ ok: true, kingdoms: inspectWorld(world).kingdoms })
       } catch (err) {
         return errorResult(err)
@@ -427,6 +458,7 @@ export function createMapMcpServer(options: CreateServerOptions = {}): { server:
     async ({ operations }) => {
       try {
         const results: { action: string; id: number; ok: boolean; error?: string }[] = []
+        const editMeta: { reason: string; highlight?: LiveHighlight; highlights: LiveHighlight[] } = { reason: 'manage_markers', highlights: [] }
         const { world, changed } = session.edit((startWorld) => {
           let w: World = startWorld
           for (const op of operations) {
@@ -443,6 +475,12 @@ export function createMapMcpServer(options: CreateServerOptions = {}): { server:
                 }
                 w = patchItem(w, { type: 'state', id: op.capitalOfKingdomId }, { capital: sel.id })
               }
+              const created = w.markers.find((m) => m.id === sel.id)
+              if (created) {
+                const h: LiveHighlight = { kind: 'point', x: created.x, y: created.y, label: created.name }
+                editMeta.highlight = h
+                editMeta.highlights.push(h)
+              }
               results.push({ action: 'add', id: sel.id, ok: true })
             } else if (op.action === 'update') {
               const sel: Sel = { type: 'marker', id: op.id }
@@ -451,6 +489,12 @@ export function createMapMcpServer(options: CreateServerOptions = {}): { server:
                 continue
               }
               w = patchItem(w, sel, { kind: op.kind, x: op.x, y: op.y, name: op.name, notes: op.notes })
+              const updated = w.markers.find((m) => m.id === op.id)
+              if (updated) {
+                const h: LiveHighlight = { kind: 'point', x: updated.x, y: updated.y, label: updated.name }
+                editMeta.highlight = h
+                editMeta.highlights.push(h)
+              }
               results.push({ action: 'update', id: op.id, ok: true })
             } else {
               const sel: Sel = { type: 'marker', id: op.id }
@@ -463,7 +507,7 @@ export function createMapMcpServer(options: CreateServerOptions = {}): { server:
             }
           }
           return w
-        })
+        }, editMeta)
         return jsonResult({ ok: true, changed, results, totalMarkers: world.markers.length })
       } catch (err) {
         return errorResult(err)
@@ -511,6 +555,7 @@ export function createMapMcpServer(options: CreateServerOptions = {}): { server:
     async ({ operations }) => {
       try {
         const results: { action: string; id: number; ok: boolean; error?: string }[] = []
+        const editMeta: { reason: string; highlight?: LiveHighlight; highlights: LiveHighlight[] } = { reason: 'manage_labels', highlights: [] }
         const { world, changed } = session.edit((startWorld) => {
           let w: World = startWorld
           for (const op of operations) {
@@ -520,6 +565,12 @@ export function createMapMcpServer(options: CreateServerOptions = {}): { server:
               if (op.text !== undefined || op.size !== undefined || op.rotation !== undefined) {
                 w = patchItem(w, sel, { text: op.text, size: op.size, rotation: op.rotation })
               }
+              const created = w.labels.find((l) => l.id === sel.id)
+              if (created) {
+                const h: LiveHighlight = { kind: 'point', x: created.x, y: created.y, label: created.text }
+                editMeta.highlight = h
+                editMeta.highlights.push(h)
+              }
               results.push({ action: 'add', id: sel.id, ok: true })
             } else if (op.action === 'update') {
               const sel: Sel = { type: 'label', id: op.id }
@@ -528,6 +579,12 @@ export function createMapMcpServer(options: CreateServerOptions = {}): { server:
                 continue
               }
               w = patchItem(w, sel, { x: op.x, y: op.y, text: op.text, size: op.size, rotation: op.rotation })
+              const updated = w.labels.find((l) => l.id === op.id)
+              if (updated) {
+                const h: LiveHighlight = { kind: 'point', x: updated.x, y: updated.y, label: updated.text }
+                editMeta.highlight = h
+                editMeta.highlights.push(h)
+              }
               results.push({ action: 'update', id: op.id, ok: true })
             } else {
               const sel: Sel = { type: 'label', id: op.id }
@@ -540,7 +597,7 @@ export function createMapMcpServer(options: CreateServerOptions = {}): { server:
             }
           }
           return w
-        })
+        }, editMeta)
         return jsonResult({ ok: true, changed, results, totalLabels: world.labels.length })
       } catch (err) {
         return errorResult(err)
@@ -575,21 +632,33 @@ export function createMapMcpServer(options: CreateServerOptions = {}): { server:
     async (args) => {
       try {
         let targetId = args.id ?? 0
+        const editMeta: { reason: string; highlight?: LiveHighlight; highlights?: LiveHighlight[] } = { reason: 'manage_kingdoms' }
         const { world, changed } = session.edit((w) => {
           if (args.capitalId !== undefined && args.capitalId !== null && !w.markers.some((m) => m.id === args.capitalId)) {
             throw new Error(`Marcador id=${args.capitalId} não encontrado para definir como capital.`)
           }
+          let next: World
           if (args.action === 'add') {
             const [added, sel] = addState(w)
             targetId = sel.id
-            return args.name || args.color || args.capitalId !== undefined
-              ? patchItem(added, sel, { name: args.name, color: args.color, capital: args.capitalId })
-              : added
+            next =
+              args.name || args.color || args.capitalId !== undefined
+                ? patchItem(added, sel, { name: args.name, color: args.color, capital: args.capitalId })
+                : added
+          } else {
+            if (!args.id) throw new Error('Informe `id` quando action="update".')
+            if (!w.states.some((s) => s.id === args.id)) throw new Error(`Reino id=${args.id} não encontrado.`)
+            next = patchItem(w, { type: 'state', id: args.id }, { name: args.name, color: args.color, capital: args.capitalId })
           }
-          if (!args.id) throw new Error('Informe `id` quando action="update".')
-          if (!w.states.some((s) => s.id === args.id)) throw new Error(`Reino id=${args.id} não encontrado.`)
-          return patchItem(w, { type: 'state', id: args.id }, { name: args.name, color: args.color, capital: args.capitalId })
-        })
+          const st = next.states.find((s) => s.id === targetId)
+          const cap = st?.capital != null ? next.markers.find((m) => m.id === st.capital) : undefined
+          if (st && cap) {
+            const h: LiveHighlight = { kind: 'point', x: cap.x, y: cap.y, label: st.name }
+            editMeta.highlight = h
+            editMeta.highlights = [h]
+          }
+          return next
+        }, editMeta)
         const state = world.states.find((s) => s.id === targetId)
         return jsonResult({ ok: true, changed, kingdom: state ?? null })
       } catch (err) {
@@ -615,7 +684,7 @@ export function createMapMcpServer(options: CreateServerOptions = {}): { server:
     },
     async (args) => {
       try {
-        const { world, changed } = session.edit((w) => patchSettings(w, args))
+        const { world, changed } = session.edit((w) => patchSettings(w, args), { reason: 'update_settings' })
         return jsonResult({ ok: true, changed, settings: world.settings })
       } catch (err) {
         return errorResult(err)
@@ -700,5 +769,40 @@ export function createMapMcpServer(options: CreateServerOptions = {}): { server:
     },
   )
 
-  return { server, session }
+  // 15. live_preview
+  server.registerTool(
+    'live_preview',
+    {
+      title: 'Controlar live-preview no navegador',
+      description:
+        'Inicia, para ou consulta o servidor local de live-preview (127.0.0.1) para sincronização bidirecional em tempo real com o editor web no navegador. ' +
+        'Quando iniciado, retorna `connectUrl` pronto para o usuário abrir no navegador e acompanhar/editar o mapa ao vivo.',
+      inputSchema: {
+        action: z.enum(['start', 'stop', 'status']).describe('Ação no canal de live-preview.'),
+        port: z.number().int().min(0).max(65535).optional().describe('Porta local opcional em 127.0.0.1 (padrão: 4175; 0 escolhe porta livre).'),
+        appUrl: z.string().url().optional().describe('URL do editor web (padrão: http://localhost:5173).'),
+      },
+    },
+    async ({ action, port, appUrl }) => {
+      try {
+        if (action === 'start') {
+          const status = await liveBridge.start({
+            port,
+            appUrl,
+            token: process.env.MAP_MCP_LIVE_TOKEN,
+          })
+          return jsonResult({ ok: true, ...status })
+        }
+        if (action === 'stop') {
+          await liveBridge.stop()
+          return jsonResult({ ok: true, ...liveBridge.status() })
+        }
+        return jsonResult({ ok: true, ...liveBridge.status() })
+      } catch (err) {
+        return errorResult(err)
+      }
+    },
+  )
+
+  return { server, session, liveBridge }
 }
