@@ -166,3 +166,18 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .icon-grid img { image-rendering: auto; object-fit: contain; }
 .kind-picker summary { cursor: pointer; font-size: 0.95rem; }
 .kind-picker[open] summary { margin-bottom: 4px; }
+
+/* Live-preview MCP sync badge & popover in the top bar. */
+.live-control { display: flex; align-items: center; gap: 6px; }
+.live-summary { display: flex; align-items: center; gap: 6px; font-size: 0.9rem; }
+.live-quick-pause { font-size: 0.85rem; padding: 5px 8px; }
+.live-dot { width: 8px; height: 8px; border-radius: 50%; background: #8a7b63; display: inline-block; flex: none; }
+.live-dot.connected { background: #2d7a3e; box-shadow: 0 0 0 2px rgba(45, 122, 62, 0.25); }
+.live-dot.paused { background: #b86e12; }
+.live-dot.error { background: var(--error); }
+.live-pop { gap: 8px; }
+.live-pop code { background: var(--paper); padding: 0 4px; font-size: 0.85em; border: 1px solid rgba(59, 42, 26, 0.25); }
+.live-pop .row { flex-wrap: wrap; }
+.live-pop .row button { flex: 1 1 auto; font-size: 0.85rem; }
+.live-conflict { border: 1px solid var(--error); background: #f6e2c8; padding: 6px 8px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.live-conflict button { flex: none; font-size: 0.8rem; padding: 3px 8px; }

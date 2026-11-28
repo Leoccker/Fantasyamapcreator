@@ -6,6 +6,7 @@ import { createHistory } from '../core/history'
 import { generateFromMask } from '../core/importMask'
 import { addIcon, addState, findItem, hasHandEdits, itemCenter, itemExists, patchItem, removeIcon, removeItem, type Sel } from '../core/items'
 import { generateKingdoms } from '../core/kingdoms'
+import { describeLiveReason, highlightCenter, reuseUnchangedWorldData, type LiveWorldEvent } from '../core/liveProtocol'
 import { radiusDefault, radiusMax, scaleRadius, sizeById, sizeOfWorld } from '../core/mapSize'
 import { patchSettings } from '../core/settings'
 import { LIMITS, parseWorld, serializeWorld, type World } from '../core/world'
@@ -16,7 +17,7 @@ import { ConfirmDiscard } from './ConfirmDiscard'
 import { GeneratorPanel, type GenForm } from './GeneratorPanel'
 import { LayerToggles } from './LayerToggles'
 import { MapSettingsPanel } from './MapSettingsPanel'
-import { MapCanvas } from './MapCanvas'
+import { MapCanvas, type LivePulse } from './MapCanvas'
 import { PlacesPanel } from './PlacesPanel'
 import { Section } from './Section'
 import type { Status } from './StatusMessage'
@@ -26,6 +27,7 @@ import { isTyping } from './dom'
 import { fileToIconSrc, iconName } from './iconUpload'
 import { svgToLandMask } from './svgRaster'
 import { bootFromAutosave, browserStorage, useAutosave } from './useAutosave'
+import { useLiveSync } from './useLiveSync'
 import type { Tool } from './tools'
 import type { Focus } from './useMapInteraction'
 
@@ -92,6 +94,7 @@ export function App() {
   const [rawSelection, setSelection] = useState<Sel | null>(null)
   const selection = itemExists(world, rawSelection) ? rawSelection : null
   const [focus, setFocus] = useState<Focus | null>(null)
+  const [livePulse, setLivePulse] = useState<LivePulse | null>(null)
   const kingdomVariant = useRef(0) // each "Gerar reinos" click gives a new layout
   // Snapshots are World references (edits never mutate a World), so history costs no copies.
   // Every history change goes with a setWorld, which re-renders the undo/redo buttons.
@@ -102,6 +105,40 @@ export function App() {
   const say = (text: string, error = false) => setStatus({ text, error })
   const autosave = useAutosave(storage, world, edited, initial.canSave)
 
+  /** Applies an incoming World update pushed by the MCP live-preview bridge; undoable via the app's history. */
+  function applyRemoteWorld(ev: LiveWorldEvent, follow: boolean) {
+    if (!ev.worldJson) return
+    try {
+      const parsed = parseWorld(ev.worldJson)
+      const prev = worldRef.current
+      const merged = reuseUnchangedWorldData(prev, parsed)
+      if (prev.width !== merged.width || prev.height !== merged.height) {
+        setBrush((b) => ({ ...b, radius: scaleRadius(b.radius, prev, merged) }))
+      }
+      history.push(prev)
+      setWorld(merged)
+      if (ev.replaced || merged.points !== prev.points || merged.seed !== prev.seed) {
+        setForm(toForm(merged))
+      }
+      say(describeLiveReason(ev.reason, ev.highlight))
+      const highlights = ev.highlights?.length ? ev.highlights : ev.highlight ? [ev.highlight] : []
+      if (highlights.length) {
+        setLivePulse((p) => ({ highlights, n: (p?.n ?? 0) + 1 }))
+        if (follow) {
+          const pt = highlightCenter(highlights[highlights.length - 1])
+          setFocus((f) => ({ ...pt, n: (f?.n ?? 0) + 1 }))
+        }
+      }
+    } catch (err) {
+      say(`Erro ao aplicar atualização do MCP: ${(err as Error).message}`, true)
+    }
+  }
+
+  const liveSync = useLiveSync({
+    onRemoteWorld: applyRemoteWorld,
+    onConflict: (msg) => say(msg, true),
+  })
+
   /** Replaces the map with a new one (generate/import): history belongs to the old map. */
   function show(w: World) {
     const prev = worldRef.current // read now: the updater runs after setWorld below has moved the ref
@@ -111,6 +148,7 @@ export function App() {
     setSelection(null)
     setWorld(w)
     setForm(toForm(w))
+    liveSync.pushWorld(w, 'browser_replace')
   }
 
   /**
@@ -132,6 +170,7 @@ export function App() {
     history.push(worldRef.current)
     setWorld(w)
     say(msg)
+    liveSync.pushWorld(w, 'browser_edit')
   }
 
   /** New kingdoms (and their generated places) on the current terrain; hand-made places are kept. Undoable. */
@@ -167,6 +206,7 @@ export function App() {
     if (!w) return
     setWorld(w)
     say('Desfeito.')
+    liveSync.pushWorld(w, 'browser_undo')
   }
 
   function redo() {
@@ -174,6 +214,7 @@ export function App() {
     if (!w) return
     setWorld(w)
     say('Refeito.')
+    liveSync.pushWorld(w, 'browser_redo')
   }
 
   useEffect(() => {
@@ -288,6 +329,11 @@ export function App() {
           onUndo={undo}
           onRedo={redo}
           status={status}
+          live={liveSync}
+          onPushLive={() => {
+            liveSync.pushWorld(worldRef.current, 'browser_sync')
+            say('Mapa atual enviado ao servidor MCP.')
+          }}
         />
         {pendingDiscard && (
           <ConfirmDiscard
@@ -360,6 +406,7 @@ export function App() {
         selection={selection}
         onSelect={select}
         focus={focus}
+        livePulse={livePulse}
       />
     </>
   )

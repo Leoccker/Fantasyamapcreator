@@ -22,17 +22,17 @@ describe('MCP server end-to-end', () => {
   })
 
   async function setupClient(workdir?: string) {
-    const { server, session } = createMapMcpServer({ workdir })
+    const { server, session, liveBridge } = createMapMcpServer({ workdir })
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
     const client = new Client({ name: 'test-client', version: '0.1.0' })
     await Promise.all([server.connect(serverTransport), client.connect(clientTransport)])
-    return { client, server, session }
+    return { client, server, session, liveBridge }
   }
 
-  it('exposes all 14 tools and runs a full worldbuilding workflow', async () => {
+  it('exposes all 15 tools and runs a full worldbuilding workflow', async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), 'fmc-mcp-'))
     tempDirs.push(dir)
-    const { client, session } = await setupClient(dir)
+    const { client, session, liveBridge } = await setupClient(dir)
 
     const { tools } = await client.listTools()
     expect(tools.map((t) => t.name).sort()).toEqual([
@@ -40,6 +40,7 @@ describe('MCP server end-to-end', () => {
       'find_locations',
       'generate_world',
       'inspect_world',
+      'live_preview',
       'load_world',
       'manage_kingdoms',
       'manage_labels',
@@ -239,5 +240,22 @@ describe('MCP server end-to-end', () => {
     expect(loaded.ok).toBe(true)
     expect(loaded.summary.settings.title).toBe('Terras de Aethel')
     expect(loaded.summary.markers.items.some((m: { name: string }) => m.name === 'Porto da Bruma')).toBe(true)
+
+    // 9. Regenerate kingdoms preserves hand-made markers
+    const regen = parseTextContent(
+      await client2.callTool({ name: 'regenerate_kingdoms', arguments: { count: 2, variant: 1 } }),
+    )
+    expect(regen.ok).toBe(true)
+    expect(regen.kingdoms.length).toBeGreaterThan(0)
+
+    // 10. Start/status/stop live-preview bridge tool
+    const liveOff = parseTextContent(await client.callTool({ name: 'live_preview', arguments: { action: 'status' } }))
+    expect(liveOff.running).toBe(false)
+    const liveOn = parseTextContent(await client.callTool({ name: 'live_preview', arguments: { action: 'start', port: 0 } }))
+    expect(liveOn.running).toBe(true)
+    expect(liveOn.connectUrl).toContain('?mcp=')
+    const liveStopped = parseTextContent(await client.callTool({ name: 'live_preview', arguments: { action: 'stop' } }))
+    expect(liveStopped.running).toBe(false)
+    expect(liveBridge.running).toBe(false)
   })
 })
