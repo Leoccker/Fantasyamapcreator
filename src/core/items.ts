@@ -102,7 +102,9 @@ export function addState(w: World): [World, Sel] {
 }
 
 /** For markers, `icon: 0` means "back to the kind's own icon". */
-export type Patch = Partial<Pick<Marker, 'name' | 'notes' | 'kind' | 'x' | 'y'> & { icon: number } & Pick<Label, 'text' | 'size' | 'rotation'> & Pick<State, 'color'>>
+export type Patch = Partial<
+  Pick<Marker, 'name' | 'notes' | 'kind' | 'x' | 'y'> & { icon: number } & Pick<Label, 'text' | 'size' | 'rotation'> & Pick<State, 'color' | 'capital'>
+>
 
 /** Clamps/rounds positions, sizes and angles and caps text lengths. */
 function normalize(w: World, p: Patch): Patch {
@@ -145,7 +147,8 @@ export function patchItem(w: World, sel: Sel, patch: Patch): World {
     const labels = update(w.labels, sel.id, p, ['text', 'size', 'rotation', 'x', 'y'])
     return labels === w.labels ? w : { ...w, labels }
   }
-  const states = update(w.states, sel.id, p, ['name', 'color'])
+  if (p.capital !== undefined && p.capital !== null && !w.markers.some((m) => m.id === p.capital)) delete p.capital
+  const states = update(w.states, sel.id, p, ['name', 'color', 'capital'])
   return states === w.states ? w : { ...w, states }
 }
 

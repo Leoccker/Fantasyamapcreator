@@ -17,6 +17,7 @@ import { renderWorldPng, renderWorldSvg } from './renderHeadless'
 import { MapSession, resolveSafePath } from './session'
 import {
   BIOME_KEYS,
+  compactWorldCounts,
   findLocations,
   inspectWorld,
   LAND_BIOME_KEYS,
@@ -41,7 +42,7 @@ const LAYER_IDS = Object.keys(LAYERS) as LayerId[]
 
 function jsonResult(data: unknown) {
   return {
-    content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }],
+    content: [{ type: 'text' as const, text: JSON.stringify(data) }],
   }
 }
 
@@ -169,7 +170,7 @@ export function createMapMcpServer(options: CreateServerOptions = {}): { server:
     'undo_redo',
     {
       title: 'Desfazer ou refazer edição',
-      description: 'Desfaz (undo) ou refaz (redo) a última alteração no mapa ativo.',
+      description: 'Desfaz (undo) ou refaz (redo) a última alteração no mapa ativo, retornando um resumo compacto dos contadores.',
       inputSchema: {
         action: z.enum(['undo', 'redo']).describe('Ação a executar.'),
       },
@@ -179,9 +180,11 @@ export function createMapMcpServer(options: CreateServerOptions = {}): { server:
         const res = action === 'undo' ? session.undo() : session.redo()
         return jsonResult({
           ok: true,
+          action,
           changed: res.changed,
           status: session.status(),
-          summary: inspectWorld(res.world),
+          counts: compactWorldCounts(res.world),
+          settings: res.world.settings,
         })
       } catch (err) {
         return errorResult(err)
@@ -252,6 +255,7 @@ export function createMapMcpServer(options: CreateServerOptions = {}): { server:
           .describe('Retângulo delimitador opcional em unidades do mapa.'),
         minDistanceFromMarkers: z.number().min(0).optional().describe('Distância mínima de marcadores já existentes.'),
         minSpacing: z.number().min(0).optional().describe('Distância mínima entre os pontos retornados.'),
+        avoidOverlays: z.boolean().optional().describe('Evita áreas cobertas pela bússola e barra de escala (padrão: true).'),
         limit: z.number().int().min(1).max(20).optional().describe('Quantidade máxima de locais sugeridos (padrão: 5).'),
       },
     },
@@ -273,6 +277,7 @@ export function createMapMcpServer(options: CreateServerOptions = {}): { server:
           bounds: args.bounds,
           minDistanceFromMarkers: args.minDistanceFromMarkers,
           minSpacing: args.minSpacing,
+          avoidOverlays: args.avoidOverlays,
           limit: args.limit,
         })
         return jsonResult(result)
@@ -393,6 +398,12 @@ export function createMapMcpServer(options: CreateServerOptions = {}): { server:
                 y: z.number(),
                 name: z.string().max(TEXT_LIMITS.name).optional().describe('Nome do local (se omitido, gera automaticamente).'),
                 notes: z.string().max(TEXT_LIMITS.notes).optional().describe('Notas/lore de RPG sobre o local.'),
+                capitalOfKingdomId: z
+                  .number()
+                  .int()
+                  .min(1)
+                  .optional()
+                  .describe('Opcional: vincula este novo marcador como capital do reino informado.'),
               }),
               z.object({
                 action: z.literal('update'),
@@ -424,6 +435,13 @@ export function createMapMcpServer(options: CreateServerOptions = {}): { server:
               w = added
               if (op.name !== undefined || op.notes !== undefined) {
                 w = patchItem(w, sel, { name: op.name, notes: op.notes })
+              }
+              if (op.capitalOfKingdomId !== undefined) {
+                if (!w.states.some((s) => s.id === op.capitalOfKingdomId)) {
+                  results.push({ action: 'add', id: sel.id, ok: false, error: `Reino id=${op.capitalOfKingdomId} não encontrado para vincular capital.` })
+                  continue
+                }
+                w = patchItem(w, { type: 'state', id: op.capitalOfKingdomId }, { capital: sel.id })
               }
               results.push({ action: 'add', id: sel.id, ok: true })
             } else if (op.action === 'update') {
@@ -535,7 +553,8 @@ export function createMapMcpServer(options: CreateServerOptions = {}): { server:
     'manage_kingdoms',
     {
       title: 'Gerenciar reinos',
-      description: 'Cria um novo reino vazio (para pintar depois com `brush_stroke` tool="kingdom") ou renomeia/muda a cor (#rrggbb) de um reino existente.',
+      description:
+        'Cria um novo reino vazio (para pintar depois com `brush_stroke` tool="kingdom") ou atualiza nome, cor (#rrggbb) e capital (`capitalId`, ID de um marcador existente ou null para desvincular).',
       inputSchema: {
         action: z.enum(['add', 'update']),
         id: z.number().int().min(1).optional().describe('ID do reino (obrigatório quando action="update").'),
@@ -544,20 +563,32 @@ export function createMapMcpServer(options: CreateServerOptions = {}): { server:
           .string()
           .regex(/^#[0-9a-fA-F]{6}$/, 'Cor deve estar no formato hexadecimal #rrggbb.')
           .optional(),
+        capitalId: z
+          .number()
+          .int()
+          .min(1)
+          .nullable()
+          .optional()
+          .describe('ID do marcador a definir como capital do reino (ou null para deixar sem capital).'),
       },
     },
     async (args) => {
       try {
         let targetId = args.id ?? 0
         const { world, changed } = session.edit((w) => {
+          if (args.capitalId !== undefined && args.capitalId !== null && !w.markers.some((m) => m.id === args.capitalId)) {
+            throw new Error(`Marcador id=${args.capitalId} não encontrado para definir como capital.`)
+          }
           if (args.action === 'add') {
             const [added, sel] = addState(w)
             targetId = sel.id
-            return args.name || args.color ? patchItem(added, sel, { name: args.name, color: args.color }) : added
+            return args.name || args.color || args.capitalId !== undefined
+              ? patchItem(added, sel, { name: args.name, color: args.color, capital: args.capitalId })
+              : added
           }
           if (!args.id) throw new Error('Informe `id` quando action="update".')
           if (!w.states.some((s) => s.id === args.id)) throw new Error(`Reino id=${args.id} não encontrado.`)
-          return patchItem(w, { type: 'state', id: args.id }, { name: args.name, color: args.color })
+          return patchItem(w, { type: 'state', id: args.id }, { name: args.name, color: args.color, capital: args.capitalId })
         })
         const state = world.states.find((s) => s.id === targetId)
         return jsonResult({ ok: true, changed, kingdom: state ?? null })

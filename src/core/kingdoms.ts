@@ -1,9 +1,11 @@
 // Kingdoms: generation by cost-based expansion from capitals, and keeping stateId consistent after edits.
 import { isWaterBiome, relAltitude } from './biomes'
 import { MinHeap } from './heap'
+import { clamp } from './math'
 import { getMesh, type Mesh } from './mesh'
 import { makeNamer } from './names'
 import { rngFor } from './rng'
+import { inBox, overlayBoxes } from './settings'
 import { POINT_DECIMALS, round, type Label, type Marker, type State, type World } from './world'
 
 /** Muted inks that read well on parchment; reused in order. */
@@ -79,32 +81,74 @@ export function generateKingdoms(w: World, count: number, variant = 0): World {
   for (let i = 0; i < n; i++) if (stateId[i]) cellsOf[stateId[i] - 1].push(i)
   const spacing = Math.sqrt((w.width * w.height) / n) // average cell size
   const at = (i: number) => ({ x: round(px(i), POINT_DECIMALS), y: round(py(i), POINT_DECIMALS) })
+  const overlays = overlayBoxes(w)
+  const inOverlay = (x: number, y: number) => inBox(x, y, overlays.compass) || inBox(x, y, overlays.scaleBar)
+  const edgeMargin = Math.min(w.width, w.height) * 0.06
 
-  capitals.forEach((cap, k) => {
+  capitals.forEach((seedCap, k) => {
     const id = k + 1
     const cells = cellsOf[k]
+    const cx = cells.reduce((s, c) => s + px(c), 0) / cells.length
+    const cy = cells.reduce((s, c) => s + py(c), 0) / cells.length
+
+    // Re-seat the capital into the kingdom's heartland (interior lowland near the centroid, away from borders,
+    // map edges, and corner overlays), rather than leaving it on the extreme Dijkstra expansion seed.
+    const maxSpan = Math.max(spacing, ...cells.map((c) => Math.hypot(px(c) - cx, py(c) - cy)))
+    let cap = seedCap
+    let bestScore = Infinity
+    for (const c of cells) {
+      const x = px(c)
+      const y = py(c)
+      const dNorm = Math.hypot(x - cx, y - cy) / maxSpan
+      const deg = mesh.nOff[c + 1] - mesh.nOff[c]
+      let foreign = 0
+      for (let e = mesh.nOff[c]; e < mesh.nOff[c + 1]; e++) {
+        if (stateId[mesh.nIdx[e]] !== id) foreign++
+      }
+      const borderPenalty = deg > 0 ? (foreign / deg) * 0.85 : 0.85
+      const edgePenalty = x < edgeMargin || x > w.width - edgeMargin || y < edgeMargin || y > w.height - edgeMargin ? 1.5 : 0
+      const altPenalty = alt(c) >= CAPITAL_MAX_ALT ? 2 : 0
+      const overlayPenalty = inOverlay(x, y) ? 10 : 0
+      const score = dNorm + borderPenalty + edgePenalty + altPenalty + overlayPenalty
+      if (score < bestScore) {
+        bestScore = score
+        cap = c
+      }
+    }
+
     const capitalId = nextId++
     const name = namer('state')
+    const capPos = at(cap)
     states.push({ id, name, color: KINGDOM_COLORS[k % KINGDOM_COLORS.length], capital: capitalId, auto: true })
-    markers.push({ id: capitalId, kind: 'capital', ...at(cap), name: namer('city'), notes: '', auto: true })
+    markers.push({ id: capitalId, kind: 'capital', ...capPos, name: namer('city'), notes: '', auto: true })
 
-    // Towns: random owned cells kept apart from each other and from the capital.
+    // Towns: random owned cells kept apart from each other, from the capital, and out of corner overlays.
     const placed = [cap]
     const towns = Math.min(2 + Math.floor(rng() * 3), Math.floor(cells.length / 25))
-    for (let t = 0; t < 30 && placed.length <= towns; t++) {
+    for (let t = 0; t < 40 && placed.length <= towns; t++) {
       const c = cells[Math.floor(rng() * cells.length)]
-      if (placed.every((o) => dist(o, c) > 6 * spacing)) {
+      if (!inOverlay(px(c), py(c)) && placed.every((o) => dist(o, c) > 6 * spacing)) {
         placed.push(c)
         markers.push({ id: nextId++, kind: 'town', ...at(c), name: namer('city'), notes: '', auto: true })
       }
     }
 
-    // Name label at the owned cell nearest the kingdom's centroid.
-    const cx = cells.reduce((s, c) => s + px(c), 0) / cells.length
-    const cy = cells.reduce((s, c) => s + py(c), 0) / cells.length
-    const center = cells.reduce((b, c) => (Math.hypot(px(c) - cx, py(c) - cy) < Math.hypot(px(b) - cx, py(b) - cy) ? c : b), cap)
+    // Name label near the kingdom's centroid, shifted away from the capital marker if they would collide.
+    const center = cells.reduce((b, c) => {
+      const score = (i: number) => Math.hypot(px(i) - cx, py(i) - cy) + (inOverlay(px(i), py(i)) ? 1e6 : 0)
+      return score(c) < score(b) ? c : b
+    }, cap)
     const size = Math.round(Math.min(48, Math.max(16, 12 + 0.06 * Math.sqrt(cells.length) * spacing)))
-    labels.push({ id: nextId++, text: name, ...at(center), size, rotation: 0, auto: true })
+    let lx = px(center)
+    let ly = py(center)
+    if (Math.hypot(lx - capPos.x, ly - capPos.y) < size * 1.1) {
+      const shift = Math.round(size * 0.95)
+      const upY = clamp(ly - shift, edgeMargin, w.height - edgeMargin)
+      const downY = clamp(ly + shift, edgeMargin, w.height - edgeMargin)
+      // Pick the direction that stays farther from overlays and inside the map.
+      ly = !inOverlay(lx, upY) && Math.abs(upY - capPos.y) >= Math.abs(downY - capPos.y) ? upY : downY
+    }
+    labels.push({ id: nextId++, text: name, x: round(lx, POINT_DECIMALS), y: round(ly, POINT_DECIMALS), size, rotation: 0, auto: true })
   })
 
   return { ...w, stateId, states, markers, labels, nextId }

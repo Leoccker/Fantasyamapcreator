@@ -35,10 +35,17 @@ describe('itens', () => {
     expect(itemExists(b, s1)).toBe(false)
   })
 
-  it('remover a capital deixa o reino sem capital', () => {
+  it('remover a capital deixa o reino sem capital; patchItem pode vincular ou desvincular capital', () => {
     const st = w.states[0]
     const out = removeItem(w, { type: 'marker', id: st.capital! })
     expect(out.states.find((s) => s.id === st.id)!.capital).toBeNull()
+
+    const [withCap, capSel] = addMarker(out, 'capital', 200, 200)
+    const linked = patchItem(withCap, { type: 'state', id: st.id }, { capital: capSel.id })
+    expect(linked.states.find((s) => s.id === st.id)!.capital).toBe(capSel.id)
+    expect(patchItem(linked, { type: 'state', id: st.id }, { capital: 999999 })).toBe(linked) // unknown marker ignored
+    const unlinked = patchItem(linked, { type: 'state', id: st.id }, { capital: null })
+    expect(unlinked.states.find((s) => s.id === st.id)!.capital).toBeNull()
   })
 
   it('posição fica dentro do mapa e tamanho/rotação ficam nos limites', () => {

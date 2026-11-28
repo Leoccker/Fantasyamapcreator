@@ -135,27 +135,47 @@ describe('MCP server end-to-end', () => {
     )
     expect(kPaint.ok).toBe(true)
 
-    // 5. Manage markers & labels
+    // 5. Manage markers (including linking a capital to the new kingdom) & labels
     const markers = parseTextContent(
       await client.callTool({
         name: 'manage_markers',
         arguments: {
           operations: [
-            { action: 'add', kind: 'port', x: portPos.x, y: portPos.y, name: 'Porto da Bruma', notes: 'Mercado de especiarias e guilda de navegadores.' },
+            {
+              action: 'add',
+              kind: 'port',
+              x: portPos.x,
+              y: portPos.y,
+              name: 'Porto da Bruma',
+              notes: 'Mercado de especiarias e guilda de navegadores.',
+              capitalOfKingdomId: newK.kingdom.id,
+            },
             { action: 'add', kind: 'dungeon', x: 500, y: 310, name: 'Abismo Antigo' },
           ],
         },
       }),
     )
     expect(markers.results).toHaveLength(2)
+    const portId = markers.results[0].id
     const dungeonId = markers.results[1].id
+
+    // Verify capital linked via manage_markers, then unlink & re-link via manage_kingdoms
+    expect(session.world?.states.find((s) => s.id === newK.kingdom.id)?.capital).toBe(portId)
+    const unlinked = parseTextContent(
+      await client.callTool({ name: 'manage_kingdoms', arguments: { action: 'update', id: newK.kingdom.id, capitalId: null } }),
+    )
+    expect(unlinked.kingdom.capital).toBeNull()
+    const relinked = parseTextContent(
+      await client.callTool({ name: 'manage_kingdoms', arguments: { action: 'update', id: newK.kingdom.id, capitalId: portId } }),
+    )
+    expect(relinked.kingdom.capital).toBe(portId)
 
     const markerUpdate = parseTextContent(
       await client.callTool({
         name: 'manage_markers',
         arguments: {
           operations: [
-            { action: 'update', id: markers.results[0].id, notes: 'Atualizado com gancho de campanha.' },
+            { action: 'update', id: portId, notes: 'Atualizado com gancho de campanha.' },
             { action: 'remove', id: dungeonId },
           ],
         },
@@ -173,19 +193,23 @@ describe('MCP server end-to-end', () => {
     )
     expect(labels.results[0].ok).toBe(true)
 
-    // 6. Update settings & test undo/redo
+    // 6. Update settings & test compact undo/redo
     const settingsRes = parseTextContent(
       await client.callTool({ name: 'update_settings', arguments: { gridType: 'square', gridKm: 100 } }),
     )
     expect(settingsRes.settings.gridType).toBe('square')
 
-    const undone = parseTextContent(await client.callTool({ name: 'undo_redo', arguments: { action: 'undo' } }))
+    const undoneRaw = await client.callTool({ name: 'undo_redo', arguments: { action: 'undo' } })
+    const undoneText = (undoneRaw.content as { type: string; text?: string }[])[0].text!
+    expect(undoneText.length).toBeLessThan(600) // compact payload, not full map dump
+    const undone = JSON.parse(undoneText)
     expect(undone.changed).toBe(true)
-    expect(undone.summary.settings.gridType).toBe('hex')
+    expect(undone.settings.gridType).toBe('hex')
+    expect(undone.counts.kingdoms).toBe(4)
 
     const redone = parseTextContent(await client.callTool({ name: 'undo_redo', arguments: { action: 'redo' } }))
     expect(redone.changed).toBe(true)
-    expect(redone.summary.settings.gridType).toBe('square')
+    expect(redone.settings.gridType).toBe('square')
 
     // 7. Render preview (inline PNG + SVG export)
     const previewRes = await client.callTool({

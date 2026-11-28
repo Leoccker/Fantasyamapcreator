@@ -1,8 +1,8 @@
 // Compact world summaries and semantic spatial queries so AIs can reason about geography without raw cell arrays.
 import { Biome, BIOME_NAMES, isPaintable, isWaterBiome, relAltitude, type LandBiome } from '../core/biomes'
-import { stateCenter } from '../core/kingdoms'
 import { clamp } from '../core/math'
 import { getMesh, isLand } from '../core/mesh'
+import { inBox, overlayBoxes, type Corner, type OverlayBox } from '../core/settings'
 import { POINT_DECIMALS, round, type World } from '../core/world'
 
 export type BiomeKey = keyof typeof Biome
@@ -46,6 +46,10 @@ export interface WorldSummary {
     waterPct: number
   }
   settings: World['settings']
+  overlays: {
+    compass: { corner: Corner; bounds: OverlayBox }
+    scaleBar: { corner: Corner; bounds: OverlayBox }
+  }
   biomes: { key: BiomeKey; name: string; cells: number; pct: number }[]
   kingdoms: {
     id: number
@@ -53,8 +57,10 @@ export interface WorldSummary {
     color: string
     capitalId: number | null
     capitalName: string | null
+    capitalPos: { x: number; y: number } | null
     cells: number
     pctOfLand: number
+    /** Geographic centroid of the kingdom's territory (not the capital position). */
     center: { x: number; y: number } | null
     bounds: { minX: number; minY: number; maxX: number; maxY: number } | null
     neighbors: number[]
@@ -89,10 +95,10 @@ export function inspectWorld(w: World): WorldSummary {
   const biomeCounts = new Map<number, number>()
   const stateStats = new Map<
     number,
-    { cells: number; minX: number; minY: number; maxX: number; maxY: number; neighbors: Set<number>; hasCoast: boolean }
+    { cells: number; sumX: number; sumY: number; minX: number; minY: number; maxX: number; maxY: number; neighbors: Set<number>; hasCoast: boolean }
   >()
   for (const st of w.states) {
-    stateStats.set(st.id, { cells: 0, minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity, neighbors: new Set(), hasCoast: false })
+    stateStats.set(st.id, { cells: 0, sumX: 0, sumY: 0, minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity, neighbors: new Set(), hasCoast: false })
   }
 
   for (let i = 0; i < n; i++) {
@@ -109,6 +115,8 @@ export function inspectWorld(w: World): WorldSummary {
         const x = w.points[2 * i]
         const y = w.points[2 * i + 1]
         st.cells++
+        st.sumX += x
+        st.sumY += y
         if (x < st.minX) st.minX = x
         if (y < st.minY) st.minY = y
         if (x > st.maxX) st.maxX = x
@@ -138,7 +146,6 @@ export function inspectWorld(w: World): WorldSummary {
   const markerById = new Map(w.markers.map((m) => [m.id, m]))
   const kingdoms = w.states.map((st) => {
     const info = stateStats.get(st.id)!
-    const c = stateCenter(w, st.id)
     const cap = st.capital !== null ? markerById.get(st.capital) : undefined
     return {
       id: st.id,
@@ -146,9 +153,10 @@ export function inspectWorld(w: World): WorldSummary {
       color: st.color,
       capitalId: st.capital,
       capitalName: cap?.name ?? null,
+      capitalPos: cap ? { x: cap.x, y: cap.y } : null,
       cells: info.cells,
       pctOfLand: pct(info.cells, landCells),
-      center: c ? { x: round(c[0], POINT_DECIMALS), y: round(c[1], POINT_DECIMALS) } : null,
+      center: info.cells > 0 ? { x: round(info.sumX / info.cells, POINT_DECIMALS), y: round(info.sumY / info.cells, POINT_DECIMALS) } : null,
       bounds:
         info.cells > 0
           ? {
@@ -161,6 +169,14 @@ export function inspectWorld(w: World): WorldSummary {
       neighbors: [...info.neighbors].sort((a, b) => a - b),
       hasCoast: info.hasCoast,
     }
+  })
+
+  const rawOverlays = overlayBoxes(w)
+  const roundBox = (b: OverlayBox): OverlayBox => ({
+    minX: round(b.minX, 1),
+    minY: round(b.minY, 1),
+    maxX: round(b.maxX, 1),
+    maxY: round(b.maxY, 1),
   })
 
   const majorRivers = w.rivers
@@ -194,6 +210,10 @@ export function inspectWorld(w: World): WorldSummary {
       waterPct: pct(waterCells, n),
     },
     settings: w.settings,
+    overlays: {
+      compass: { corner: w.settings.compassCorner, bounds: roundBox(rawOverlays.compass) },
+      scaleBar: { corner: w.settings.scaleCorner, bounds: roundBox(rawOverlays.scaleBar) },
+    },
     biomes,
     kingdoms,
     rivers: { total: w.rivers.length, major: majorRivers },
@@ -221,6 +241,35 @@ export function inspectWorld(w: World): WorldSummary {
         rotation: l.rotation,
       })),
     },
+  }
+}
+
+export interface CompactWorldCounts {
+  width: number
+  height: number
+  landPct: number
+  waterPct: number
+  kingdoms: number
+  markers: number
+  labels: number
+  rivers: number
+}
+
+/** Tiny summary for lightweight responses like undo/redo (avoids burning context tokens). */
+export function compactWorldCounts(w: World): CompactWorldCounts {
+  const n = w.points.length / 2
+  let land = 0
+  for (let i = 0; i < n; i++) if (!isWaterBiome(w.biome[i])) land++
+  const landPct = n > 0 ? round((land / n) * 100, 1) : 0
+  return {
+    width: w.width,
+    height: w.height,
+    landPct,
+    waterPct: round(100 - landPct, 1),
+    kingdoms: w.states.length,
+    markers: w.markers.length,
+    labels: w.labels.length,
+    rivers: w.rivers.length,
   }
 }
 
@@ -294,6 +343,8 @@ export interface LocationQuery {
   bounds?: { minX: number; maxX: number; minY: number; maxY: number }
   minDistanceFromMarkers?: number
   minSpacing?: number
+  /** Skip coordinates covered by the compass rose or scale bar (default: true). */
+  avoidOverlays?: boolean
   limit?: number
 }
 
@@ -388,6 +439,8 @@ export function findLocations(w: World, query: LocationQuery): FindLocationsResu
   }
 
   const minMarkerDistSq = query.minDistanceFromMarkers ? query.minDistanceFromMarkers ** 2 : 0
+  const avoidOverlays = query.avoidOverlays ?? true
+  const overlays = avoidOverlays ? overlayBoxes(w) : null
   const candidates: { cell: number; score: number; coast: boolean }[] = []
 
   for (let i = 0; i < n; i++) {
@@ -441,6 +494,7 @@ export function findLocations(w: World, query: LocationQuery): FindLocationsResu
 
     const x = w.points[2 * i]
     const y = w.points[2 * i + 1]
+    if (overlays && (inBox(x, y, overlays.compass) || inBox(x, y, overlays.scaleBar))) continue
     if (query.quadrant && !inQuadrant(x, y, w.width, w.height, query.quadrant)) continue
     if (query.bounds) {
       const { minX, maxX, minY, maxY } = query.bounds

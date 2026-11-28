@@ -2,8 +2,9 @@ import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { Biome, relAltitude } from '../core/biomes'
 import { generate } from '../core/generate'
-import { addMarker } from '../core/items'
+import { addMarker, patchItem } from '../core/items'
 import { getMesh, isLand } from '../core/mesh'
+import { inBox, overlayBoxes } from '../core/settings'
 import { MapSession, resolveSafePath } from './session'
 import { findLocations, inspectWorld, parseBiome, parseLandBiome, samplePoint } from './spatial'
 
@@ -57,13 +58,33 @@ describe('spatial queries', () => {
     expect(parseLandBiome('Desert')).toBe(Biome.Desert)
   })
 
-  it('inspectWorld produces consistent counts and kingdom metadata', () => {
+  it('inspectWorld produces consistent counts, true territory center, capitalPos, and overlays', () => {
     const summary = inspectWorld(w)
     expect(summary.meta.landCells + summary.meta.waterCells).toBe(summary.meta.cellCount)
     expect(summary.meta.oceanCells + summary.meta.lakeCells).toBe(summary.meta.waterCells)
     expect(summary.kingdoms.length).toBe(w.states.length)
-    expect(summary.kingdoms.every((k) => k.cells > 0 && k.center !== null)).toBe(true)
+    expect(summary.kingdoms.every((k) => k.cells > 0 && k.center !== null && k.capitalPos !== null)).toBe(true)
     expect(summary.biomes.reduce((acc, b) => acc + b.cells, 0)).toBe(summary.meta.cellCount)
+    expect(summary.overlays.compass.corner).toBe(w.settings.compassCorner)
+    expect(summary.overlays.scaleBar.corner).toBe(w.settings.scaleCorner)
+
+    // Moving a capital far from the territory must NOT move the kingdom's territory center.
+    const st = w.states[0]
+    const moved = patchItem(w, { type: 'marker', id: st.capital! }, { x: 10, y: 10 })
+    const after = inspectWorld(moved)
+    const beforeK = summary.kingdoms.find((k) => k.id === st.id)!
+    const afterK = after.kingdoms.find((k) => k.id === st.id)!
+    expect(afterK.center).toEqual(beforeK.center)
+    expect(afterK.capitalPos).toEqual({ x: 10, y: 10 })
+  })
+
+  it('findLocations avoids compass and scale bar overlays by default', () => {
+    const boxes = overlayBoxes(w)
+    const res = findLocations(w, { terrain: 'any', limit: 20 })
+    for (const loc of res.locations) {
+      expect(inBox(loc.x, loc.y, boxes.compass)).toBe(false)
+      expect(inBox(loc.x, loc.y, boxes.scaleBar)).toBe(false)
+    }
   })
 
   it('samplePoint inspects cell terrain and nearest markers', () => {
